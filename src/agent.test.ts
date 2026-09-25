@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { emptyAgentState, runTurn, type AgentTool } from "./agent.ts";
+import { emptyAgentState, runTurn, type AgentTool, type AgentTraceEvent } from "./agent.ts";
 import type { GatewaySettings, ModelMessage } from "./gateway.ts";
 
 const settings: GatewaySettings = { baseUrl: "http://127.0.0.1:53124/v1", apiKey: "", model: "test/model" };
@@ -18,6 +18,7 @@ function response(message: Record<string, unknown>, conversationId = ""): Respon
 describe("Qumi agent loop", () => {
   it("runs a tool round and retains matching assistant and tool messages", async () => {
     const requests: Array<{ messages: ModelMessage[]; tools: unknown[]; conversation_id?: string }> = [];
+    const trace: AgentTraceEvent[] = [];
     globalThis.fetch = async (_, init) => {
       const body = JSON.parse(String(init?.body));
       requests.push(body);
@@ -27,13 +28,13 @@ describe("Qumi agent loop", () => {
       return response({ role: "assistant", content: "찾았습니다." }, "cache_2");
     };
     const tool: AgentTool = {
-      definition: { type: "function", function: { name: "lookup", description: "Lookup", parameters: { type: "object" } } },
+      definition: { type: "function", function: { name: "lookup", description: "Lookup", parameters: { type: "object", properties: { query: { type: "string" } } } } },
       execute: async (args) => {
         assert.deepEqual(args, { query: "Qumi" });
         return "조회 결과";
       },
     };
-    const result = await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "찾아줘", tools: [tool], signal: new AbortController().signal });
+    const result = await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "찾아줘", tools: [tool], signal: new AbortController().signal, onTrace: (event) => trace.push(event) });
     assert.equal(result.content, "찾았습니다.");
     assert.equal(result.state.conversationId, "cache_2");
     assert.equal(requests.length, 2);
@@ -41,18 +42,35 @@ describe("Qumi agent loop", () => {
     assert.equal(requests[1].messages.at(-2)?.role, "assistant");
     assert.deepEqual(requests[1].messages.at(-1), { role: "tool", tool_call_id: "call_1", content: "조회 결과" });
     assert.equal(result.state.transcript.length, 4);
+    assert.deepEqual(trace.map((event) => event.event), ["turn_started", "model_requested", "model_completed", "tool_started", "tool_completed", "model_requested", "model_completed", "turn_completed"]);
+    assert.deepEqual(trace.find((event) => event.event === "tool_completed")?.argumentKeys, ["query"]);
+    assert.equal(JSON.stringify(trace).includes("Qumi"), false);
+  });
+
+  it("records a safe failure reason without logging the provider error text", async () => {
+    globalThis.fetch = async () => { throw new Error("secret provider detail"); };
+    const trace: AgentTraceEvent[] = [];
+    await assert.rejects(runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "private prompt", signal: new AbortController().signal, onTrace: (event) => trace.push(event) }), /secret provider detail/);
+    assert.equal(trace.at(-1)?.event, "turn_failed");
+    assert.equal(trace.at(-1)?.stage, "model");
+    assert.equal(trace.at(-1)?.reason, "request_failed");
+    assert.equal(JSON.stringify(trace).includes("secret provider detail"), false);
+    assert.equal(JSON.stringify(trace).includes("private prompt"), false);
   });
 
   it("returns unknown tools as tool errors without executing them", async () => {
     const requests: Array<{ messages: ModelMessage[] }> = [];
+    const trace: AgentTraceEvent[] = [];
     globalThis.fetch = async (_, init) => {
       requests.push(JSON.parse(String(init?.body)));
       return requests.length === 1
         ? response({ role: "assistant", content: "", tool_calls: [{ id: "bad", type: "function", function: { name: "delete_everything", arguments: "{}" } }] })
         : response({ role: "assistant", content: "도구를 사용할 수 없습니다." });
     };
-    await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "확인", signal: new AbortController().signal });
+    await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "확인", signal: new AbortController().signal, onTrace: (event) => trace.push(event) });
     assert.match(requests[1].messages.at(-1)?.content ?? "", /허용되지 않은 도구/);
+    assert.equal(trace.find((event) => event.event === "tool_completed")?.tool, "unknown_tool");
+    assert.equal(JSON.stringify(trace).includes("delete_everything"), false);
   });
 
   it("forwards streamed thinking without adding it to conversation history", async () => {
@@ -66,6 +84,26 @@ describe("Qumi agent loop", () => {
     assert.deepEqual(events, [{ type: "thinking", text: "검토 중" }, { type: "delta", text: "완료" }]);
     assert.equal(result.content, "완료");
     assert.equal(result.state.transcript.at(-1)?.content, "완료");
+  });
+
+  it("continues past the former model-round and tool-call caps", async () => {
+    let rounds = 0;
+    let executed = 0;
+    globalThis.fetch = async () => {
+      rounds++;
+      if (rounds > 121) return response({ role: "assistant", content: "완료" });
+      return response({ role: "assistant", content: "", tool_calls: [1, 2].map((index) => ({
+        id: `call_${rounds}_${index}`, type: "function", function: { name: "lookup", arguments: "{}" },
+      })) });
+    };
+    const tool: AgentTool = {
+      definition: { type: "function", function: { name: "lookup", description: "Lookup", parameters: { type: "object" } } },
+      execute: async () => { executed++; return "ok"; },
+    };
+    const result = await runTurn({ settings, contextWindow: 1_000_000, state: emptyAgentState(), prompt: "계속", tools: [tool], signal: new AbortController().signal });
+    assert.equal(rounds, 122);
+    assert.equal(executed, 242);
+    assert.equal(result.content, "완료");
   });
 
   it("refreshes an older Qumi instruction so an existing conversation sees page text editing", async () => {

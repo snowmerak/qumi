@@ -1,8 +1,13 @@
-import { emptyAgentState, type AgentState } from "./agent";
-import type { ChatMessage, GatewaySettings, ModelMessage } from "./gateway";
+import { emptyAgentState, type AgentState } from "./agent.ts";
+import { approvalPolicyFrom, type ApprovalPolicy } from "./browser-approval.ts";
+import type { ChatMessage, GatewaySettings, ModelMessage } from "./gateway.ts";
+
+export interface AppSettings extends GatewaySettings {
+  approvalPolicy: ApprovalPolicy;
+}
 
 export interface SavedState {
-  settings: GatewaySettings;
+  settings: AppSettings;
   messages: ChatMessage[];
   agent: AgentState;
 }
@@ -10,7 +15,7 @@ export interface SavedState {
 const storageKey = "qumiState";
 
 export const emptyState: SavedState = {
-  settings: { baseUrl: "", apiKey: "", model: "", contextWindowOverride: 0 },
+  settings: { baseUrl: "", apiKey: "", model: "", contextWindowOverride: 0, approvalPolicy: "changes" },
   messages: [],
   agent: emptyAgentState(),
 };
@@ -47,6 +52,7 @@ export async function loadState(): Promise<SavedState> {
       model: typeof saved.settings?.model === "string" ? saved.settings.model : "",
       contextWindowOverride: typeof saved.settings?.contextWindowOverride === "number" && Number.isSafeInteger(saved.settings.contextWindowOverride) && saved.settings.contextWindowOverride > 0
         ? saved.settings.contextWindowOverride : 0,
+      approvalPolicy: approvalPolicyFrom(saved.settings?.approvalPolicy),
     },
     messages,
     agent: {

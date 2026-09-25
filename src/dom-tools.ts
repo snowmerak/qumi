@@ -282,7 +282,7 @@ export function domWriteTool(target: PageTarget, approve: DomApproval): AgentToo
   return {
     definition: { type: "function", function: {
       name: "dom_write",
-      description: "Write to one visible element selected by a unique CSS selector. To edit ordinary page body text or translate it in place, first use dom_read, then pass its direct textNodes[].index as textNodeIndex with a new string value; nested links and markup remain intact. With attribute, set a permitted HTML attribute using a string or remove it using null. Without either field, set an input/textarea/select/editable value. Requires user approval for every write. URL, event handler, style and arbitrary HTML attributes are excluded.",
+      description: "Write to one visible element selected by a unique CSS selector. To edit ordinary page body text or translate it in place, first use dom_read, then pass its direct textNodes[].index as textNodeIndex with a new string value; nested links and markup remain intact. With attribute, set a permitted HTML attribute using a string or remove it using null. Without either field, set an input/textarea/select/editable value. Confirmation follows the browser work setting. URL, event handler, style and arbitrary HTML attributes are excluded.",
       parameters: { type: "object", properties: { selector: { type: "string" }, attribute: { type: "string" }, textNodeIndex: { type: "integer" }, value: { type: ["string", "boolean", "null"] } }, required: ["selector", "value"], additionalProperties: false },
     } },
     execute: async (input, signal) => {
@@ -321,7 +321,7 @@ export function domClickTool(target: PageTarget, approve: DomApproval): AgentToo
   return {
     definition: { type: "function", function: {
       name: "dom_click",
-      description: "Click one visible DOM element selected by unique CSS selector. Requires user approval. The page may change afterward.",
+      description: "Click one visible DOM element selected by unique CSS selector. Confirmation follows the browser work setting. The page may change afterward.",
       parameters: { type: "object", properties: { selector: { type: "string" } }, required: ["selector"], additionalProperties: false },
     } },
     execute: async (input, signal) => {

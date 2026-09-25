@@ -85,6 +85,8 @@
 .settings-form { display: grid; gap: 24px; }
 .settings-form .mp-field { gap: 8px; }
 .settings-form .mp-field__hint { margin: 0; }
+.execution-log-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.execution-log-actions .mp-button { min-height: 34px; }
 .settings-form .mp-input, .settings-form .mp-select { min-height: 42px; }
 .password-field { position: relative; }
 .password-field .mp-input { padding-right: 44px; }

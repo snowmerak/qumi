@@ -180,7 +180,7 @@ export function navigationTool(
       type: "function",
       function: {
         name: "navigate_to_url",
-        description: "Navigate the connected Chrome tab to an HTTP(S) URL or open the URL in a new tab. The user must approve each navigation. After navigation, page access must be connected again.",
+        description: "Navigate the connected Chrome tab to an HTTP(S) URL or open the URL in a new tab. Confirmation follows the browser work setting. After navigation, page access must be connected again.",
         parameters: {
           type: "object",
           properties: {
@@ -247,7 +247,7 @@ export function switchTabTool(
       type: "function",
       function: {
         name: "switch_to_tab",
-        description: "Switch to an existing HTTP(S) tab from list_open_tabs in the same Chrome window. The user must approve the destination. Page access must be connected again after switching.",
+        description: "Switch to an existing HTTP(S) tab from list_open_tabs in the same Chrome window. Confirmation follows the browser work setting. Page access must be connected again after switching.",
         parameters: { type: "object", properties: { tabId: { type: "integer" } }, required: ["tabId"], additionalProperties: false },
       },
     },

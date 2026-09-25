@@ -4,10 +4,11 @@ import {
   normalizeGatewayUrl,
   type ChatMessage,
   type GatewayModel,
-  type GatewaySettings,
 } from "./gateway";
 import { emptyAgentState, runTurn, type AgentState } from "./agent";
-import { emptyState, loadState, saveState } from "./storage";
+import { approvalPolicyFrom, requiresBrowserApproval, withReadApproval } from "./browser-approval";
+import { clearExecutionLog, createExecutionLog, readExecutionLog } from "./execution-log";
+import { emptyState, loadState, saveState, type AppSettings } from "./storage";
 import { canReadPages, getActivePageCandidate, requestPageAccess, listOpenTabsTool, navigationTool, pageContextTool, switchTabTool, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
 import { domClickTool, domListTool, domReadTool, domWriteTool } from "./dom-tools";
 
@@ -31,19 +32,22 @@ function Status({ connection }: { connection: Connection }) {
 }
 
 interface SettingsViewProps {
-  settings: GatewaySettings;
+  settings: AppSettings;
   availableModels: GatewayModel[];
   onClose: () => void;
-  onSave: (settings: GatewaySettings, models: GatewayModel[]) => void;
+  onSave: (settings: AppSettings, models: GatewayModel[]) => void;
+  onExportLog: () => Promise<number>;
+  onClearLog: () => Promise<void>;
 }
 
-function SettingsView({ settings, availableModels, onClose, onSave }: SettingsViewProps) {
+function SettingsView({ settings, availableModels, onClose, onSave, onExportLog, onClearLog }: SettingsViewProps) {
   const [draft, setDraft] = useState(settings);
   const [checkedModels, setCheckedModels] = useState<GatewayModel[] | null>(null);
   const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
   const [showKey, setShowKey] = useState(false);
+  const [logMessage, setLogMessage] = useState("");
   const sameGateway = draft.baseUrl === settings.baseUrl && draft.apiKey === settings.apiKey;
   const models = checkedModels ?? (sameGateway ? availableModels : []);
 
@@ -85,7 +89,11 @@ function SettingsView({ settings, availableModels, onClose, onSave }: SettingsVi
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const found = await checkConnection();
+    if (settings.baseUrl && sameGateway && draft.model === settings.model && draft.contextWindowOverride === settings.contextWindowOverride) {
+      onSave(draft, models);
+      return;
+    }
+    const found = sameGateway && models.length ? models : await checkConnection();
     if (!found) return;
     const model = found.find((entry) => entry.id === draft.model) ?? found[0];
     const contextWindowOverride = model.id === draft.model ? draft.contextWindowOverride : 0;
@@ -101,8 +109,8 @@ function SettingsView({ settings, availableModels, onClose, onSave }: SettingsVi
     <div className="settings-view">
       <button className="mp-button mp-button--ghost back-button" type="button" onClick={onClose}><Icon name="back" />채팅으로 돌아가기</button>
       <div className="settings-heading">
-        <h2>Gateway 설정</h2>
-        <p>Q Gateway가 출력한 접속 주소를 입력하세요.</p>
+        <h2>Qumi 설정</h2>
+        <p>Q Gateway 연결과 브라우저 작업 확인 방식을 설정하세요.</p>
       </div>
       <form className="settings-form" onSubmit={submit}>
         <div className="mp-field">
@@ -131,6 +139,24 @@ function SettingsView({ settings, availableModels, onClose, onSave }: SettingsVi
           <input id="context-window" className="mp-input" type="number" min="1024" step="1" placeholder={selectedModel?.contextLength ? String(selectedModel.contextLength) : "모델이 제공하지 않으면 입력"} value={draft.contextWindowOverride || ""} onChange={(event) => setDraft({ ...draft, contextWindowOverride: event.target.value ? Number(event.target.value) : 0 })} />
           <p className="mp-field__hint">{selectedModel?.contextLength ? `Gateway 제공값 ${selectedModel.contextLength.toLocaleString()} · 입력하면 우선 적용됩니다.` : "Gateway 제공값이 없으면 직접 입력해야 압축할 수 있습니다."}</p>
         </div>
+        <div className="mp-field">
+          <label className="mp-field__label" htmlFor="approval-policy">브라우저 작업 확인</label>
+          <select id="approval-policy" className="mp-select" value={draft.approvalPolicy} onChange={(event) => setDraft({ ...draft, approvalPolicy: approvalPolicyFrom(event.target.value) })} aria-describedby="approval-policy-hint">
+            <option value="all">모든 작업마다 확인</option>
+            <option value="changes">변경 작업만 확인</option>
+            <option value="none">확인 없이 실행</option>
+          </select>
+          <p id="approval-policy-hint" className="mp-field__hint">읽기는 페이지·DOM·탭 목록 조회, 변경은 입력·클릭·탭 이동입니다. Chrome 사이트 접근 권한은 별도로 요청됩니다.</p>
+        </div>
+        <div className="mp-field">
+          <span className="mp-field__label">실행 진단 로그</span>
+          <p className="mp-field__hint">최근 7일, 최대 2,000개 이벤트를 이 브라우저에 저장합니다. 프롬프트·페이지 내용·API 키는 기록하지 않습니다.</p>
+          <div className="execution-log-actions">
+            <button className="mp-button mp-button--secondary" type="button" onClick={() => void onExportLog().then((count) => setLogMessage(`${count}개 이벤트를 다운로드했습니다.`)).catch(() => setLogMessage("로그를 다운로드하지 못했습니다."))}>JSON 다운로드</button>
+            <button className="mp-button mp-button--ghost" type="button" onClick={() => void onClearLog().then(() => setLogMessage("저장된 실행 로그를 지웠습니다.")).catch(() => setLogMessage("로그를 지우지 못했습니다."))}>로그 지우기</button>
+          </div>
+          {logMessage && <p className="mp-field__hint" role="status">{logMessage}</p>}
+        </div>
         <button className="mp-button mp-button--secondary" type="button" onClick={() => void checkConnection()} disabled={testing}>{testing ? "확인 중…" : "연결 확인"}</button>
         {message && <div className={`inline-notice ${isError ? "inline-notice--error" : "inline-notice--success"}`} role={isError ? "alert" : "status"}>{message}</div>}
         <button className="mp-button mp-button--primary save-button" type="submit" disabled={testing}>{testing ? "확인 중…" : "저장"}</button>
@@ -142,7 +168,7 @@ function SettingsView({ settings, availableModels, onClose, onSave }: SettingsVi
 export function App() {
   const [ready, setReady] = useState(false);
   const [view, setView] = useState<"chat" | "settings">("chat");
-  const [settings, setSettings] = useState<GatewaySettings>(emptyState.settings);
+  const [settings, setSettings] = useState<AppSettings>(emptyState.settings);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [agent, setAgent] = useState<AgentState>(emptyAgentState);
   const [models, setModels] = useState<GatewayModel[]>([]);
@@ -278,17 +304,22 @@ export function App() {
 
   function approveNavigation(url: string, disposition: TabAction, signal: AbortSignal): Promise<boolean> {
     const title = disposition === "new_tab" ? "새 탭 열기" : disposition === "existing_tab" ? "기존 탭 전환" : "현재 탭 이동";
-    return approveAction(title, url, signal);
+    return approveChange(title, url, signal);
   }
 
-  function saveSettings(next: GatewaySettings, found: GatewayModel[]) {
-    if (next.baseUrl !== settings.baseUrl || next.apiKey !== settings.apiKey || next.model !== settings.model || next.contextWindowOverride !== settings.contextWindowOverride) {
+  function approveChange(title: string, detail: string, signal: AbortSignal): Promise<boolean> {
+    return requiresBrowserApproval(settings.approvalPolicy, "change") ? approveAction(title, detail, signal) : Promise.resolve(true);
+  }
+
+  function saveSettings(next: AppSettings, found: GatewayModel[]) {
+    const providerSettingsChanged = next.baseUrl !== settings.baseUrl || next.apiKey !== settings.apiKey || next.model !== settings.model || next.contextWindowOverride !== settings.contextWindowOverride;
+    if (providerSettingsChanged) {
       setMessages([]);
       setAgent(emptyAgentState());
     }
     setSettings(next);
     setModels(found);
-    setConnection("connected");
+    if (providerSettingsChanged && found.length) setConnection("connected");
     setError("");
     setView("chat");
   }
@@ -300,12 +331,25 @@ export function App() {
     setError("");
   }
 
+  async function exportLog(): Promise<number> {
+    const events = await readExecutionLog();
+    const blob = new Blob([JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), events }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `qumi-execution-log-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    return events.length;
+  }
+
   async function send(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const content = draft.trim();
     const contextWindow = settings.contextWindowOverride || models.find((model) => model.id === settings.model)?.contextLength || 0;
     if (!content || sending || connection !== "connected" || !settings.model || !contextWindow) return;
     const controller = new AbortController();
+    const executionLog = createExecutionLog(settings.model, !!pageTarget, settings.approvalPolicy);
     requestController.current = controller;
     setPendingPrompt(content);
     setDraft("");
@@ -318,10 +362,13 @@ export function App() {
     try {
       const result = await runTurn({
         settings, contextWindow, state: agent, prompt: content, signal: controller.signal,
+        onTrace: executionLog.record,
         tools: pageTarget ? [
-          pageContextTool(pageTarget), domListTool(pageTarget), domReadTool(pageTarget),
-          domWriteTool(pageTarget, approveAction), domClickTool(pageTarget, approveAction),
-          listOpenTabsTool(pageTarget),
+          withReadApproval(pageContextTool(pageTarget), pageTarget, settings.approvalPolicy, approveAction),
+          withReadApproval(domListTool(pageTarget), pageTarget, settings.approvalPolicy, approveAction),
+          withReadApproval(domReadTool(pageTarget), pageTarget, settings.approvalPolicy, approveAction),
+          domWriteTool(pageTarget, approveChange), domClickTool(pageTarget, approveChange),
+          withReadApproval(listOpenTabsTool(pageTarget), pageTarget, settings.approvalPolicy, approveAction),
           navigationTool(pageTarget, approveNavigation, () => setPageTarget(null)),
           switchTabTool(pageTarget, approveNavigation, () => setPageTarget(null)),
         ] : [],
@@ -346,6 +393,7 @@ export function App() {
       setDraft(content);
       setError(controller.signal.aborted ? "요청을 취소했습니다." : cause instanceof Error ? cause.message : "응답을 받지 못했습니다.");
     } finally {
+      void executionLog.finish().catch(() => setError((current) => current || "실행 로그를 저장하지 못했습니다."));
       requestController.current = null;
       setPendingPrompt("");
       setStreamed("");
@@ -365,12 +413,12 @@ export function App() {
         <div className="brand"><span className="brand__mark" aria-hidden="true">Q</span><h1>Qumi</h1></div>
         <div className="header-actions">
           <Status connection={connection} />
-          <button className="mp-button mp-button--ghost icon-button" type="button" aria-label="Gateway 설정" onClick={() => setView("settings")} disabled={sending}><Icon name="settings" /></button>
+          <button className="mp-button mp-button--ghost icon-button" type="button" aria-label="Qumi 설정" onClick={() => setView("settings")} disabled={sending}><Icon name="settings" /></button>
         </div>
       </header>
 
       {view === "settings" ? (
-        <SettingsView settings={settings} availableModels={models} onClose={() => setView("chat")} onSave={saveSettings} />
+        <SettingsView settings={settings} availableModels={models} onClose={() => setView("chat")} onSave={saveSettings} onExportLog={exportLog} onClearLog={clearExecutionLog} />
       ) : (
         <>
           <div className="model-bar">
