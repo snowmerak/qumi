@@ -1,6 +1,6 @@
 import { it } from "node:test";
 import assert from "node:assert/strict";
-import { inspectDom } from "./dom-tools.ts";
+import { inspectDom, scrollAllTextTool } from "./dom-tools.ts";
 
 it("builds unique CSS paths and applies reviewed writes and clicks", async () => {
   class FakeText {
@@ -9,6 +9,7 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
     constructor(textContent: string) { this.textContent = textContent; }
   }
   class FakeElement {
+    nodeType = 1;
     children: FakeElement[] = [];
     childNodes: Array<FakeElement | FakeText> = [];
     parentElement: FakeElement | null = null;
@@ -45,6 +46,10 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
   body.add(new FakeElement("MAIN"));
   const first = main.add(new FakeElement("BUTTON"));
   main.add(new FakeElement("BUTTON"));
+  const paragraph = main.add(new FakeElement("P"));
+  paragraph.addText("Third");
+  paragraph.addText(" fourth");
+  main.add(new FakeElement("SCRIPT")).addText("not rendered");
   const input = main.add(new FakeInput()) as FakeInput;
   first.innerText = "Go";
   const buttonText = first.addText("Go");
@@ -79,6 +84,28 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
     assert.equal((root.result?.children as Array<{ selector: string }>)[1].selector, "body > main:nth-of-type(2)");
     const children = inspectDom({ action: "list", selector: "body > main:nth-of-type(1)" });
     assert.equal((children.result?.children as Array<{ selector: string }>)[0].selector, buttonSelector);
+    const range = inspectDom({ action: "scrollAllText", selector: "body", from: 2, to: 3 }).result;
+    assert.equal(range?.total, 4);
+    assert.equal(range?.nextIndex, 4);
+    assert.deepEqual(range?.items, [
+      { index: 2, selector: `${buttonSelector} > strong:nth-of-type(1)`, textNodeIndex: 0, text: " now", truncated: false },
+      { index: 3, selector: "body > main:nth-of-type(1) > p:nth-of-type(1)", textNodeIndex: 0, text: "Third", truncated: false },
+    ]);
+    const after = inspectDom({ action: "scrollAllText", selector: "body", afterSelector: buttonSelector, limit: 2 }).result;
+    assert.equal(after?.from, 3);
+    assert.deepEqual(after?.items, [
+      { index: 3, selector: "body > main:nth-of-type(1) > p:nth-of-type(1)", textNodeIndex: 0, text: "Third", truncated: false },
+      { index: 4, selector: "body > main:nth-of-type(1) > p:nth-of-type(1)", textNodeIndex: 1, text: " fourth", truncated: false },
+    ]);
+    assert.equal(after?.nextIndex, null);
+    paragraph.addText("한".repeat(4000));
+    const limited = inspectDom({ action: "scrollAllText", selector: "body", from: 5, to: 5, maxResultBytes: 300 }).result;
+    const limitedItems = limited?.items as Array<{ text: string; truncated: boolean }>;
+    assert.equal(limited?.outputLimited, true);
+    assert.equal(limitedItems.length, 1);
+    assert.equal(limitedItems[0].truncated, true);
+    assert.ok(limitedItems[0].text.length > 0);
+    assert.ok(new TextEncoder().encode(JSON.stringify(limitedItems[0])).length <= 300);
     assert.equal(inspectDom({ action: "read", selector: buttonSelector }).result?.text, "Go");
     assert.deepEqual(inspectDom({ action: "read", selector: buttonSelector }).result?.textNodes, [{ index: 0, text: "Go", truncated: false }]);
     const beforeText = inspectDom({ action: "readText", selector: buttonSelector, textNodeIndex: 0 }).result;
@@ -114,4 +141,13 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
       else Reflect.deleteProperty(globalThis, key);
     }
   }
+});
+
+it("validates scroll_all_text modes and batch bounds", async () => {
+  const tool = scrollAllTextTool({ tabId: 1, windowId: 1, url: "https://example.com/", title: "Example" });
+  const signal = new AbortController().signal;
+  await assert.rejects(tool.execute({ from: 2, to: 1 }, signal), /텍스트 범위/);
+  await assert.rejects(tool.execute({ from: 1, to: 51 }, signal), /텍스트 범위/);
+  await assert.rejects(tool.execute({ from: 1, to: 2, afterSelector: "body", limit: 2 }, signal), /한 방식만/);
+  await assert.rejects(tool.execute({ afterSelector: "body", limit: 51 }, signal), /1~50/);
 });

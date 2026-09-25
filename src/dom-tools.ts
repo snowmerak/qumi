@@ -1,13 +1,17 @@
 import type { AgentTool } from "./agent.ts";
 import type { PageTarget } from "./page-context.ts";
 
-type DomAction = "list" | "read" | "describe" | "write" | "readAttribute" | "writeAttribute" | "readText" | "writeText" | "click";
+type DomAction = "list" | "read" | "scrollAllText" | "describe" | "write" | "readAttribute" | "writeAttribute" | "readText" | "writeText" | "click";
 
 interface DomCommand {
   action: DomAction;
   selector: string;
   offset?: number;
   limit?: number;
+  from?: number;
+  to?: number;
+  afterSelector?: string;
+  maxResultBytes?: number;
   textOffset?: number;
   value?: string | boolean | null;
   attribute?: string;
@@ -109,6 +113,68 @@ export function inspectDom(command: DomCommand): DomReply {
   }
 
   try {
+    if (command.action === "scrollAllText") {
+      const anchor = command.afterSelector ? uniqueElement(command.afterSelector) : null;
+      const items: Array<{ index: number; selector: string; textNodeIndex: number; text: string; truncated: boolean }> = [];
+      const maxItems = command.limit ?? ((command.to ?? 30) - (command.from ?? 1) + 1);
+      const maxResultBytes = command.maxResultBytes ?? 48_000;
+      let resultBytes = 0;
+      let total = 0;
+      let anchorPassed = anchor === null;
+      let anchorEndIndex: number | null = null;
+      let outputLimited = false;
+
+      function visit(element: Element, insideAnchor = false): void {
+        if (hiddenTags.has(element.tagName) || ["TEXTAREA", "SELECT", "OPTION"].includes(element.tagName) || !isVisible(element)) return;
+        const inAnchor = insideAnchor || element === anchor;
+        let textNodeIndex = 0;
+        for (const child of element.childNodes) {
+          if (child.nodeType === 3) {
+            const text = child.textContent || "";
+            if (!text.trim()) continue;
+            const currentTextNodeIndex = textNodeIndex++;
+            const index = ++total;
+            const inRange = anchor ? anchorPassed && !inAnchor : index >= (command.from ?? 1) && index <= (command.to ?? 30);
+            if (!inRange || items.length >= maxItems || outputLimited) continue;
+            const item = { index, selector: selectorFor(element), textNodeIndex: currentTextNodeIndex, text: text.slice(0, 4000), truncated: text.length > 4000 };
+            const encoder = new TextEncoder();
+            let bytes = encoder.encode(JSON.stringify(item)).length;
+            if (resultBytes + bytes > maxResultBytes) {
+              outputLimited = true;
+              if (items.length === 0) {
+                let low = 0;
+                let high = item.text.length;
+                while (low < high) {
+                  const middle = Math.ceil((low + high) / 2);
+                  const candidate = { ...item, text: item.text.slice(0, middle), truncated: true };
+                  if (encoder.encode(JSON.stringify(candidate)).length <= maxResultBytes) low = middle;
+                  else high = middle - 1;
+                }
+                if (low > 0) items.push({ ...item, text: item.text.slice(0, low), truncated: true });
+              }
+              continue;
+            }
+            items.push(item);
+            resultBytes += bytes;
+          } else if (child.nodeType === 1) {
+            visit(child as Element, inAnchor);
+          }
+        }
+        if (element === anchor) {
+          anchorPassed = true;
+          anchorEndIndex = total;
+        }
+      }
+
+      visit(document.body);
+      const from = anchor ? (anchorEndIndex ?? total) + 1 : command.from ?? 1;
+      const lastIndex = items.at(-1)?.index;
+      return { ok: true, url: pageUrl, result: {
+        from, total, nextIndex: lastIndex !== undefined && lastIndex < total ? lastIndex + 1 : null,
+        outputLimited, items,
+      } };
+    }
+
     const element = uniqueElement(command.selector);
     const summary = describe(element);
     if (command.action === "describe") return { ok: true, url: pageUrl, result: summary };
@@ -272,6 +338,32 @@ export function domReadTool(target: PageTarget): AgentTool {
       const textOffset = args.textOffset === undefined ? 0 : args.textOffset;
       if (!Number.isSafeInteger(textOffset) || Number(textOffset) < 0) throw new Error("텍스트 노드 목록 범위가 올바르지 않습니다.");
       return JSON.stringify(await runDom(target, { action: "read", selector: parseSelector(args.selector), textOffset: Number(textOffset) }, signal));
+    },
+  };
+}
+
+export function scrollAllTextTool(target: PageTarget, maxResultBytes = 48_000): AgentTool {
+  return {
+    definition: { type: "function", function: {
+      name: "scroll_all_text",
+      description: "Read visible text nodes from the connected page in document order, including text below the viewport. Use 1-based inclusive from/to (at most 50 entries), or afterSelector plus limit (at most 50) to read after that element's entire subtree. Each item includes its unique CSS selector and 0-based direct textNodeIndex for dom_write. nextIndex can be passed as from for the next batch. Does not physically scroll or load more content.",
+      parameters: { type: "object", properties: { from: { type: "integer" }, to: { type: "integer" }, afterSelector: { type: "string" }, limit: { type: "integer" } }, additionalProperties: false },
+    } },
+    execute: async (value, signal) => {
+      const args = parseArgs(value, ["from", "to", "afterSelector", "limit"]);
+      const rangeMode = args.from !== undefined || args.to !== undefined;
+      const anchorMode = args.afterSelector !== undefined || args.limit !== undefined;
+      if (rangeMode && anchorMode) throw new Error("텍스트 범위와 CSS 선택자 뒤 읽기 중 한 방식만 지정해 주세요.");
+      if (anchorMode) {
+        const afterSelector = parseSelector(args.afterSelector);
+        const limit = args.limit;
+        if (!Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 50) throw new Error("읽을 텍스트 개수는 1~50이어야 합니다.");
+        return JSON.stringify(await runDom(target, { action: "scrollAllText", selector: "body", afterSelector, limit: Number(limit), maxResultBytes }, signal));
+      }
+      const from = rangeMode ? args.from : 1;
+      const to = rangeMode ? args.to : 30;
+      if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || Number(from) < 1 || Number(to) < Number(from) || Number(to) - Number(from) >= 50) throw new Error("텍스트 범위는 1부터 시작하는 최대 50개의 연속 번호여야 합니다.");
+      return JSON.stringify(await runDom(target, { action: "scrollAllText", selector: "body", from: Number(from), to: Number(to), maxResultBytes }, signal));
     },
   };
 }
