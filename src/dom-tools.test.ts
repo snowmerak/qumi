@@ -56,6 +56,7 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
   const nested = first.add(new FakeElement("STRONG"));
   nested.addText(" now");
   const buttonSelector = "body > main:nth-of-type(1) > button:nth-of-type(1)";
+  const paragraphSelector = "body > main:nth-of-type(1) > p:nth-of-type(1)";
   const inputSelector = "body > main:nth-of-type(1) > input:nth-of-type(1)";
   const globals: Record<string, unknown> = {
     location: { href: "https://example.com/" },
@@ -66,6 +67,7 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
         body: [body],
         "body > main:nth-of-type(1)": [main],
         [buttonSelector]: [first],
+        [paragraphSelector]: [paragraph],
         [inputSelector]: [input],
         button: main.children.filter((child) => child.tagName === "BUTTON"),
       })[selector] || [],
@@ -135,6 +137,21 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
     assert.equal(inspectDom({ action: "click", selector: buttonSelector, fingerprint: beforeClick }).result?.clicked, true);
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(first.clicks, 1);
+    const writes = [
+      { selector: paragraphSelector, textNodeIndex: 0, value: "세 번째" },
+      { selector: paragraphSelector, textNodeIndex: 1, value: " 네 번째" },
+    ];
+    const review = inspectDom({ action: "readTextMany", selector: "body", writes }).result;
+    const reviewed = review?.items as Array<{ text: string; fingerprint: string }>;
+    assert.deepEqual(reviewed.map((item) => item.text), ["Third", " fourth"]);
+    const reviewedWrites = writes.map((write, index) => ({ ...write, expectedText: reviewed[index].text, fingerprint: reviewed[index].fingerprint }));
+    (paragraph.childNodes[1] as FakeText).textContent = "changed";
+    assert.match(inspectDom({ action: "writeTextMany", selector: "body", writes: reviewedWrites }).error || "", /본문 텍스트가 바뀌었습니다/);
+    assert.equal((paragraph.childNodes[0] as FakeText).textContent, "Third");
+    (paragraph.childNodes[1] as FakeText).textContent = " fourth";
+    assert.equal(inspectDom({ action: "writeTextMany", selector: "body", writes: reviewedWrites }).result?.written, 2);
+    assert.equal((paragraph.childNodes[0] as FakeText).textContent, "세 번째");
+    assert.equal((paragraph.childNodes[1] as FakeText).textContent, " 네 번째");
   } finally {
     for (const [key, descriptor] of Object.entries(previous)) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);

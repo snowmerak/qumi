@@ -1,7 +1,7 @@
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { capturePageTarget, getActivePageCandidate, hasPageAccess, requestPageAccess, listOpenTabsTool, navigationTool, readPageContext, switchTabTool, type PageTarget } from "./page-context.ts";
-import { domClickTool, domListTool, domReadTool, domWriteTool } from "./dom-tools.ts";
+import { domClickTool, domListTool, domReadTool, domWriteManyTool, domWriteTool } from "./dom-tools.ts";
 
 const originalChrome = Object.getOwnPropertyDescriptor(globalThis, "chrome");
 
@@ -261,6 +261,42 @@ describe("Chrome page tools", () => {
     assert.equal(commands[2].expectedText, "Original text");
     assert.equal(commands[2].fingerprint, "text123");
     assert.equal(commands[2].value, "번역된 문장");
+  });
+
+  it("reviews a text batch once and writes all nodes in one injection", async () => {
+    const commands: Array<{ action: string; writes: Array<{ selector: string; textNodeIndex: number; value: string; expectedText?: string; fingerprint?: string }> }> = [];
+    mockChrome({
+      tabs: { query: async () => [{ id: 7, url: target.url }] },
+      scripting: { executeScript: async ({ args }: { args: Array<(typeof commands)[number]> }) => {
+        const command = args[0];
+        commands.push(command);
+        return [{ result: { ok: true, url: target.url, result: command.action === "readTextMany"
+          ? { items: command.writes.map((write, index) => ({ selector: write.selector, textNodeIndex: write.textNodeIndex, text: `Old ${index}`, fingerprint: `fingerprint${index}` })) }
+          : { written: command.writes.length } } }];
+      } },
+    });
+    const writes = [
+      { selector: "body > p:nth-of-type(1)", textNodeIndex: 0, value: "새 문장 1" },
+      { selector: "body > p:nth-of-type(2)", textNodeIndex: 0, value: "새 문장 2" },
+    ];
+    const signal = new AbortController().signal;
+    const denied = domWriteManyTool(target, async () => false);
+    assert.match(await denied.execute({ writes }, signal), /"approved":false/);
+    assert.deepEqual(commands.map((command) => command.action), ["readTextMany"]);
+    commands.length = 0;
+    let approvals = 0;
+    const tool = domWriteManyTool(target, async (_title, detail) => {
+      approvals++;
+      assert.match(detail, /Old 0/);
+      assert.match(detail, /새 문장 2/);
+      return true;
+    });
+    assert.equal(JSON.parse(await tool.execute({ writes }, signal)).written, 2);
+    assert.equal(approvals, 1);
+    assert.deepEqual(commands.map((command) => command.action), ["readTextMany", "writeTextMany"]);
+    assert.deepEqual(commands[1].writes.map((write) => [write.expectedText, write.fingerprint]), [["Old 0", "fingerprint0"], ["Old 1", "fingerprint1"]]);
+    await assert.rejects(tool.execute({ writes: [writes[0], writes[0]] }, signal), /두 번 변경/);
+    assert.equal(commands.length, 2);
   });
 
   it("reports ambiguous selectors from the page instead of acting on multiple elements", async () => {

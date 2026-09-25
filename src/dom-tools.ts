@@ -1,7 +1,15 @@
 import type { AgentTool } from "./agent.ts";
 import type { PageTarget } from "./page-context.ts";
 
-type DomAction = "list" | "read" | "scrollAllText" | "describe" | "write" | "readAttribute" | "writeAttribute" | "readText" | "writeText" | "click";
+type DomAction = "list" | "read" | "scrollAllText" | "describe" | "write" | "readAttribute" | "writeAttribute" | "readText" | "writeText" | "readTextMany" | "writeTextMany" | "click";
+
+interface DomTextWrite {
+  selector: string;
+  textNodeIndex: number;
+  value: string;
+  expectedText?: string;
+  fingerprint?: string;
+}
 
 interface DomCommand {
   action: DomAction;
@@ -19,6 +27,7 @@ interface DomCommand {
   expectedAttributeValue?: string | null;
   expectedText?: string;
   fingerprint?: string;
+  writes?: DomTextWrite[];
 }
 
 interface DomReply {
@@ -113,6 +122,30 @@ export function inspectDom(command: DomCommand): DomReply {
   }
 
   try {
+    if (command.action === "readTextMany" || command.action === "writeTextMany") {
+      const writes = command.writes;
+      if (!Array.isArray(writes) || writes.length < 1 || writes.length > 20) throw new Error("본문 일괄 변경 범위가 올바르지 않습니다.");
+      // Resolve and verify every target before changing any text node.
+      const seenNodes = new Set<Text>();
+      const targets = writes.map((write) => {
+        if (typeof write.value !== "string" || write.value.length > 4000) throw new Error("본문 일괄 변경 값이 올바르지 않습니다.");
+        const element = uniqueElement(write.selector);
+        const node = selectedTextNode(element, write.textNodeIndex);
+        if (seenNodes.has(node)) throw new Error("같은 텍스트 노드를 두 번 변경할 수 없습니다.");
+        seenNodes.add(node);
+        const fingerprint = fingerprintOf(element);
+        if (command.action === "writeTextMany" && (write.fingerprint !== fingerprint || write.expectedText !== node.textContent)) {
+          throw new Error("승인 후 본문 텍스트가 바뀌었습니다. 다시 확인해 주세요.");
+        }
+        return { selector: write.selector, textNodeIndex: write.textNodeIndex, node, text: node.textContent || "", fingerprint };
+      });
+      if (command.action === "readTextMany") {
+        return { ok: true, url: pageUrl, result: { items: targets.map(({ selector, textNodeIndex, text, fingerprint }) => ({ selector, textNodeIndex, text, fingerprint })) } };
+      }
+      for (let index = 0; index < targets.length; index++) targets[index].node.textContent = writes[index].value;
+      return { ok: true, url: pageUrl, result: { written: targets.length } };
+    }
+
     if (command.action === "scrollAllText") {
       const anchor = command.afterSelector ? uniqueElement(command.afterSelector) : null;
       const items: Array<{ index: number; selector: string; textNodeIndex: number; text: string; truncated: boolean }> = [];
@@ -287,7 +320,7 @@ async function runDom(target: PageTarget, command: DomCommand, signal: AbortSign
   signal.throwIfAborted();
   if (!reply || reply.url !== target.url) throw new Error(pageChanged);
   if (!reply.ok || !reply.result) throw new Error(reply.error || "DOM 작업에 실패했습니다.");
-  if (command.action !== "click" && command.action !== "write" && command.action !== "writeAttribute" && command.action !== "writeText") await assertCurrentTarget(target);
+  if (command.action !== "click" && command.action !== "write" && command.action !== "writeAttribute" && command.action !== "writeText" && command.action !== "writeTextMany") await assertCurrentTarget(target);
   return reply.result;
 }
 
@@ -405,6 +438,42 @@ export function domWriteTool(target: PageTarget, approve: DomApproval): AgentToo
       const detail = `${target.url}\n${selector}\n${element.tag} ${element.label || element.text || ""}\n새 값: ${JSON.stringify(value)}`;
       if (!await approve("엘리먼트 값 변경", detail, signal)) return JSON.stringify({ approved: false, selector });
       return JSON.stringify(await runDom(target, { action: "write", selector, value, fingerprint: String(element.fingerprint) }, signal));
+    },
+  };
+}
+
+export function domWriteManyTool(target: PageTarget, approve: DomApproval): AgentTool {
+  return {
+    definition: { type: "function", function: {
+      name: "dom_write_many",
+      description: "Replace several visible page text nodes in one browser operation. Use selector and 0-based textNodeIndex from scroll_all_text or dom_read. Pass up to 20 writes, each with a new string value. This is faster than separate dom_write calls for translating a page. All targets are checked before any text is changed; if one target changed, nothing is written. Confirmation follows the browser work setting.",
+      parameters: { type: "object", properties: { writes: { type: "array", minItems: 1, maxItems: 20, items: { type: "object", properties: { selector: { type: "string" }, textNodeIndex: { type: "integer" }, value: { type: "string" } }, required: ["selector", "textNodeIndex", "value"], additionalProperties: false } } }, required: ["writes"], additionalProperties: false },
+    } },
+    execute: async (input, signal) => {
+      const args = parseArgs(input, ["writes"], ["writes"]);
+      if (!Array.isArray(args.writes) || args.writes.length < 1 || args.writes.length > 20) throw new Error("본문 일괄 변경은 1~20개여야 합니다.");
+      let totalChars = 0;
+      const seen = new Set<string>();
+      const writes: DomTextWrite[] = args.writes.map((entry: unknown) => {
+        const item = parseArgs(entry, ["selector", "textNodeIndex", "value"], ["selector", "textNodeIndex", "value"]);
+        const selector = parseSelector(item.selector);
+        const textNodeIndex = item.textNodeIndex;
+        const value = item.value;
+        if (!Number.isSafeInteger(textNodeIndex) || Number(textNodeIndex) < 0 || typeof value !== "string" || value.length > 4000) throw new Error("본문 일괄 변경 값이 올바르지 않습니다.");
+        totalChars += value.length;
+        const key = `${selector}\u0000${textNodeIndex}`;
+        if (seen.has(key)) throw new Error("같은 텍스트 노드를 두 번 변경할 수 없습니다.");
+        seen.add(key);
+        return { selector, textNodeIndex: Number(textNodeIndex), value };
+      });
+      if (totalChars > 24_000) throw new Error("한 번에 변경할 본문은 24,000자 이하여야 합니다.");
+      const review = await runDom(target, { action: "readTextMany", selector: "body", writes }, signal);
+      const items = review.items as Array<{ selector: string; textNodeIndex: number; text: string; fingerprint: string }>;
+      if (!Array.isArray(items) || items.length !== writes.length || items.some((item) => typeof item.text !== "string" || typeof item.fingerprint !== "string")) throw new Error("변경 전 본문을 확인하지 못했습니다.");
+      const detail = `${target.url}\n${writes.length}개 텍스트 노드\n\n${writes.map((write, index) => `${index + 1}. ${write.selector} [${write.textNodeIndex}]\n기존: ${JSON.stringify(items[index].text)}\n새 값: ${JSON.stringify(write.value)}`).join("\n\n")}`;
+      if (!await approve("페이지 본문 일괄 변경", detail, signal)) return JSON.stringify({ approved: false, count: writes.length });
+      const reviewedWrites = writes.map((write, index) => ({ ...write, expectedText: items[index].text, fingerprint: items[index].fingerprint }));
+      return JSON.stringify(await runDom(target, { action: "writeTextMany", selector: "body", writes: reviewedWrites }, signal));
     },
   };
 }

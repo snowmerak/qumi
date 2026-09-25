@@ -35,6 +35,8 @@ pnpm build
 
 `scroll_all_text`는 `{ "from": 1, "to": 30 }`처럼 1부터 세는 양끝 포함 범위를 받거나, `{ "afterSelector": "body > main:nth-of-type(1) > h2:nth-of-type(1)", "limit": 30 }`처럼 지정 요소의 하위 트리가 끝난 뒤부터 읽습니다. 한 번에 최대 50개를 반환하며 각 항목에는 전체 문서 순서의 `index`, `selector`, 해당 요소의 직접 텍스트 노드 번호 `textNodeIndex`, `text`가 들어갑니다. `nextIndex`로 다음 범위를 요청할 수 있습니다. 현재 DOM에 로드된 보이는 텍스트를 읽으며 실제 페이지 스크롤이나 추가 로딩은 하지 않습니다. 긴 텍스트 노드는 4,000자에서 잘리고, 응답이 커지면 `outputLimited`가 표시됩니다.
 
+본문의 여러 텍스트 노드를 바꿀 때는 `dom_write_many`에 `{ "writes": [{ "selector": "body > main:nth-of-type(1) > p:nth-of-type(1)", "textNodeIndex": 0, "value": "새 문장" }] }` 형식으로 최대 20개를 함께 보냅니다. 한 번에 쓸 새 텍스트 합계는 24,000자까지입니다. Qumi가 모든 대상의 기존 텍스트를 읽고 설정에 따른 변경 승인을 받은 뒤, 어느 하나라도 달라졌으면 전체 변경을 취소합니다. `dom_write`는 단일 텍스트 노드·속성·입력값 변경에 계속 사용할 수 있습니다.
+
 개발 스크립트는 Node.js 24 이상에서 확인했습니다.
 
 브라우저 안에서 동작하는 작은 도우미의 남은 기능 범위와 공수는 [에이전트 루프 검토](docs/browser-agent-loop-estimate.md)에 정리했습니다.

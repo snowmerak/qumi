@@ -10,7 +10,7 @@ import { approvalPolicyFrom, requiresBrowserApproval, withReadApproval } from ".
 import { clearExecutionLog, createExecutionLog, readExecutionLog } from "./execution-log";
 import { emptyState, loadState, saveState, type AppSettings } from "./storage";
 import { canReadPages, capturePageTarget, getActivePageCandidate, hasPageAccess, requestPageAccess, listOpenTabsTool, navigationTool, pageContextTool, switchTabTool, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
-import { domClickTool, domListTool, domReadTool, domWriteTool, scrollAllTextTool } from "./dom-tools";
+import { domClickTool, domListTool, domReadTool, domWriteManyTool, domWriteTool, scrollAllTextTool } from "./dom-tools";
 
 type Connection = "checking" | "connected" | "disconnected";
 type PendingAction = { title: string; detail: string; decide: (approved: boolean) => void };
@@ -395,7 +395,7 @@ export function App() {
           withReadApproval(domListTool(pageTarget), pageTarget, settings.approvalPolicy, approveAction),
           withReadApproval(domReadTool(pageTarget), pageTarget, settings.approvalPolicy, approveAction),
           withReadApproval(scrollAllTextTool(pageTarget, Math.max(1_024, Math.min(48_000, contextWindow - 512))), pageTarget, settings.approvalPolicy, approveAction),
-          domWriteTool(pageTarget, approveChange), domClickTool(pageTarget, approveChange),
+          domWriteTool(pageTarget, approveChange), domWriteManyTool(pageTarget, approveChange), domClickTool(pageTarget, approveChange),
           withReadApproval(listOpenTabsTool(pageTarget), pageTarget, settings.approvalPolicy, approveAction),
           navigationTool(pageTarget, approveNavigation, () => setPageTarget(null)),
           switchTabTool(pageTarget, approveNavigation, () => setPageTarget(null)),
