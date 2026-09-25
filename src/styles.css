@@ -1,12 +1,14 @@
-#root { min-height: 100vh; }
+#root { height: 100vh; height: 100dvh; overflow: hidden; }
 
 .app-shell {
   display: flex;
   flex-direction: column;
   width: 100%;
   max-width: 560px;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   margin: 0 auto;
+  overflow: hidden;
   color: var(--mp-text-primary);
   background: var(--mp-bg-base);
 }
@@ -39,7 +41,15 @@
 .model-bar .mp-select { min-width: 0; }
 .new-chat { margin-bottom: 1px; }
 
-.chat-history { flex: 1; min-height: 160px; overflow-y: auto; }
+.page-bar { display: flex; align-items: center; gap: var(--space-2); padding: 10px 20px; background: var(--mp-bg-inset); box-shadow: 0 1px 0 var(--mp-line-soft); }
+.page-bar__context { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
+.page-bar__label { color: var(--mp-text-muted); font-size: 0.68rem; }
+.page-bar__title { overflow: hidden; color: var(--mp-text-secondary); font-size: 0.77rem; text-overflow: ellipsis; white-space: nowrap; }
+.page-bar__hint { color: var(--mp-text-muted); font-size: 0.68rem; }
+.page-bar__error { color: var(--mp-danger-text); font-size: 0.75rem; }
+.page-bar .mp-button { min-height: 32px; flex: none; padding: 5px 10px; font-size: 0.75rem; }
+
+.chat-history { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .empty-chat { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; min-height: 280px; padding: 32px 24px; }
 .empty-chat h2 { margin: 0 0 8px; font-size: 1.12rem; line-height: 1.35; text-transform: none; }
 .empty-chat p { margin: 0 0 20px; color: var(--mp-text-tertiary); font-size: 0.875rem; }
@@ -59,8 +69,12 @@
 .composer__footer span { color: var(--mp-text-muted); font-family: var(--font-mono); font-size: 0.67rem; }
 .composer__footer .mp-button { min-height: 36px; }
 .composer__error { padding: 8px 10px; border-radius: var(--radius-sm); color: var(--mp-danger-text); background: var(--mp-bg-inset); box-shadow: inset 3px 0 0 var(--mp-danger-base); font-size: 0.8rem; }
+.navigation-request { display: grid; gap: 8px; padding: 12px; border-radius: var(--radius-sm); background: var(--mp-bg-inset); box-shadow: inset 3px 0 0 var(--mp-accent-500); font-size: 0.8rem; }
+.navigation-request span { max-height: min(25vh, 180px); overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; color: var(--mp-text-secondary); }
+.navigation-request div { display: flex; justify-content: flex-end; gap: 8px; }
+.navigation-request .mp-button { min-height: 32px; }
 
-.settings-view { flex: 1; overflow-y: auto; padding: 14px 20px 28px; }
+.settings-view { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 20px 28px; }
 .back-button.mp-button { min-height: 32px; margin-left: -12px; padding-inline: 12px; font-size: 0.8rem; }
 .settings-heading { margin: 22px 0 28px; }
 .settings-heading h2 { margin: 0 0 5px; font-size: 1.35rem; line-height: 1.3; text-transform: none; }
@@ -80,7 +94,7 @@
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 @media (max-width: 380px) {
-  .app-header, .model-bar, .settings-view { padding-left: 14px; padding-right: 14px; }
+  .app-header, .model-bar, .page-bar, .settings-view { padding-left: 14px; padding-right: 14px; }
   .composer, .message-list { padding-left: 14px; padding-right: 14px; }
   .connection { font-size: 0.66rem; }
 }

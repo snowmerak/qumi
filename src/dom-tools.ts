@@ -1,0 +1,253 @@
+import type { AgentTool } from "./agent.ts";
+import type { PageTarget } from "./page-context.ts";
+
+type DomAction = "list" | "read" | "describe" | "write" | "click";
+
+interface DomCommand {
+  action: DomAction;
+  selector: string;
+  offset?: number;
+  limit?: number;
+  value?: string | boolean;
+  fingerprint?: string;
+}
+
+interface DomReply {
+  ok: boolean;
+  url: string;
+  result?: Record<string, unknown>;
+  error?: string;
+}
+
+const pageChanged = "페이지가 바뀌었습니다. 현재 탭을 다시 연결해 주세요.";
+
+// Chrome serializes this function for executeScript. Keep its helpers and data inside it.
+export function inspectDom(command: DomCommand): DomReply {
+  const pageUrl = location.href;
+  const hiddenTags = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "META", "LINK"]);
+  const cleanText = (value: string, max: number) => value.replace(/\s+/g, " ").trim().slice(0, max);
+
+  function isVisible(element: Element): boolean {
+    if (element.closest("[hidden], [aria-hidden='true']")) return false;
+    const style = getComputedStyle(element);
+    return style.display !== "none" && style.visibility !== "hidden" && (style.display === "contents" || element.getClientRects().length > 0);
+  }
+
+  function childrenOf(element: Element): Element[] {
+    return Array.from(element.children).filter((child) => !hiddenTags.has(child.tagName) && isVisible(child));
+  }
+
+  function selectorFor(element: Element): string {
+    if (element === document.body) return "body";
+    const parts: string[] = [];
+    let current: Element | null = element;
+    while (current && current !== document.body) {
+      const tag = current.tagName.toLowerCase();
+      const siblings = current.parentElement ? Array.from(current.parentElement.children).filter((item) => item.tagName === current?.tagName) : [];
+      parts.unshift(`${tag}:nth-of-type(${siblings.indexOf(current) + 1})`);
+      current = current.parentElement;
+    }
+    return `body > ${parts.join(" > ")}`;
+  }
+
+  function labelOf(element: Element): string {
+    const labelledBy = element.getAttribute("aria-labelledby");
+    const labelled = labelledBy ? labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent || "").join(" ") : "";
+    const input = element as HTMLInputElement;
+    const label = "labels" in input && input.labels ? Array.from(input.labels).map((item) => item.textContent || "").join(" ") : "";
+    return cleanText(element.getAttribute("aria-label") || labelled || label || element.getAttribute("alt") || element.getAttribute("title") || "", 120);
+  }
+
+  function fingerprintOf(element: Element): string {
+    const control = element as HTMLInputElement;
+    const source = [element.tagName, element.getAttribute("type"), element.getAttribute("name"), element.getAttribute("href"), labelOf(element), cleanText((element as HTMLElement).innerText || "", 240), "value" in control ? control.value : "", "checked" in control ? control.checked : ""].join("\u001f");
+    let hash = 2166136261;
+    for (let index = 0; index < source.length; index++) hash = Math.imul(hash ^ source.charCodeAt(index), 16777619);
+    return (hash >>> 0).toString(16);
+  }
+
+  function describe(element: Element): Record<string, unknown> {
+    return {
+      selector: selectorFor(element),
+      tag: element.tagName.toLowerCase(),
+      role: element.getAttribute("role") || undefined,
+      label: labelOf(element),
+      text: cleanText((element as HTMLElement).innerText || "", 160),
+      childCount: childrenOf(element).length,
+      fingerprint: fingerprintOf(element),
+    };
+  }
+
+  function uniqueElement(selector: string): Element {
+    if (!selector || selector.length > 500) throw new Error("CSS 선택자가 올바르지 않습니다.");
+    const matches = Array.from(document.querySelectorAll(selector)).filter((element) => (element === document.body || document.body.contains(element)) && isVisible(element));
+    if (matches.length !== 1) throw new Error(`CSS 선택자가 보이는 요소 ${matches.length}개와 일치합니다. 한 요소만 가리키도록 좁혀 주세요.`);
+    return matches[0];
+  }
+
+  try {
+    const element = uniqueElement(command.selector);
+    const summary = describe(element);
+    if (command.action === "describe") return { ok: true, url: pageUrl, result: summary };
+
+    if (command.action === "list") {
+      const children = childrenOf(element);
+      const offset = command.offset || 0;
+      const limit = command.limit || 20;
+      return { ok: true, url: pageUrl, result: { selector: command.selector, total: children.length, offset, nextOffset: offset + limit < children.length ? offset + limit : null, children: children.slice(offset, offset + limit).map(describe) } };
+    }
+
+    if (command.action === "read") {
+      const attributes: Record<string, string> = {};
+      for (const name of ["id", "class", "role", "type", "name", "placeholder", "title", "alt", "href", "aria-label", "aria-expanded", "aria-checked"]) {
+        const value = element.getAttribute(name);
+        if (value !== null) attributes[name] = value.slice(0, 300);
+      }
+      const input = element as HTMLInputElement;
+      const isPassword = element instanceof HTMLInputElement && input.type === "password";
+      const value = isPassword ? "[redacted]" : element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ? input.value.slice(0, 4000) : undefined;
+      const checked = element instanceof HTMLInputElement && (input.type === "checkbox" || input.type === "radio") ? input.checked : undefined;
+      return { ok: true, url: pageUrl, result: { ...summary, attributes, text: cleanText((element as HTMLElement).innerText || "", 8000), value, checked } };
+    }
+
+    if (!command.fingerprint || command.fingerprint !== fingerprintOf(element)) throw new Error("승인 후 요소가 바뀌었습니다. 다시 확인해 주세요.");
+    if (command.action === "write") {
+      if (element instanceof HTMLInputElement) {
+        if (element.disabled || element.readOnly || element.type === "password" || element.type === "hidden" || element.type === "file") throw new Error("이 입력란은 변경할 수 없습니다.");
+        if (element.type === "checkbox" || element.type === "radio") {
+          if (typeof command.value !== "boolean") throw new Error("체크 상태는 true 또는 false로 지정해 주세요.");
+          element.checked = command.value;
+          element.dispatchEvent(new Event("input", { bubbles: true }));
+          element.dispatchEvent(new Event("change", { bubbles: true }));
+        } else {
+          if (!["text", "search", "email", "url", "tel", "number"].includes(element.type)) throw new Error("이 입력란은 변경할 수 없습니다.");
+          if (typeof command.value !== "string") throw new Error("문자열 값이 필요합니다.");
+          element.value = command.value;
+          element.dispatchEvent(new Event("input", { bubbles: true }));
+          element.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      } else if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+        if (element.disabled || (element instanceof HTMLTextAreaElement && element.readOnly) || typeof command.value !== "string") throw new Error("이 요소는 문자열로 변경할 수 없습니다.");
+        if (element instanceof HTMLSelectElement && !Array.from(element.options).some((option) => option.value === command.value && !option.disabled)) throw new Error("선택 목록에 해당 값이 없습니다.");
+        element.value = command.value;
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+      } else if (element instanceof HTMLElement && element.isContentEditable) {
+        if (typeof command.value !== "string") throw new Error("문자열 값이 필요합니다.");
+        element.textContent = command.value;
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+      } else throw new Error("이 요소는 값을 쓸 수 없습니다.");
+      return { ok: true, url: pageUrl, result: { selector: command.selector, written: true } };
+    }
+
+    if (command.action === "click") {
+      if (!(element instanceof HTMLElement) || element.matches(":disabled")) throw new Error("이 요소는 클릭할 수 없습니다.");
+      setTimeout(() => element.click(), 0);
+      return { ok: true, url: pageUrl, result: { selector: command.selector, clicked: true } };
+    }
+    throw new Error("지원하지 않는 DOM 작업입니다.");
+  } catch (error) {
+    return { ok: false, url: pageUrl, error: error instanceof Error ? error.message : "DOM 작업에 실패했습니다." };
+  }
+}
+
+async function assertCurrentTarget(target: PageTarget): Promise<void> {
+  const [active] = await chrome.tabs.query({ active: true, windowId: target.windowId });
+  if (!active || active.id !== target.tabId || active.url !== target.url) throw new Error(pageChanged);
+}
+
+async function runDom(target: PageTarget, command: DomCommand, signal: AbortSignal): Promise<Record<string, unknown>> {
+  signal.throwIfAborted();
+  await assertCurrentTarget(target);
+  let reply: DomReply | undefined;
+  try {
+    const [injection] = await chrome.scripting.executeScript({ target: { tabId: target.tabId }, func: inspectDom, args: [command] });
+    reply = injection?.result;
+  } catch {
+    throw new Error("이 페이지의 DOM에 접근할 수 없습니다.");
+  }
+  signal.throwIfAborted();
+  if (!reply || reply.url !== target.url) throw new Error(pageChanged);
+  if (!reply.ok || !reply.result) throw new Error(reply.error || "DOM 작업에 실패했습니다.");
+  if (command.action !== "click" && command.action !== "write") await assertCurrentTarget(target);
+  return reply.result;
+}
+
+function parseArgs(value: unknown, allowed: string[], required: string[] = []): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("DOM 도구 인수가 올바르지 않습니다.");
+  const args = value as Record<string, unknown>;
+  if (Object.keys(args).some((key) => !allowed.includes(key)) || required.some((key) => !(key in args))) throw new Error("DOM 도구 인수가 올바르지 않습니다.");
+  return args;
+}
+
+function parseSelector(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || value.length > 500) throw new Error("CSS 선택자가 올바르지 않습니다.");
+  return value;
+}
+
+export function domListTool(target: PageTarget): AgentTool {
+  return {
+    definition: { type: "function", function: {
+      name: "dom_list",
+      description: "List visible direct children under a CSS selector, like listing a directory. Start at body. Returned selectors can be used for further list, read, write or click operations.",
+      parameters: { type: "object", properties: { selector: { type: "string" }, offset: { type: "integer" }, limit: { type: "integer" } }, additionalProperties: false },
+    } },
+    execute: async (value, signal) => {
+      const args = parseArgs(value, ["selector", "offset", "limit"]);
+      const selector = parseSelector(args.selector === undefined ? "body" : args.selector);
+      const offset = args.offset === undefined ? 0 : args.offset;
+      const limit = args.limit === undefined ? 20 : args.limit;
+      if (!Number.isSafeInteger(offset) || Number(offset) < 0 || !Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 30) throw new Error("목록 범위가 올바르지 않습니다.");
+      return JSON.stringify(await runDom(target, { action: "list", selector, offset: Number(offset), limit: Number(limit) }, signal));
+    },
+  };
+}
+
+export function domReadTool(target: PageTarget): AgentTool {
+  return {
+    definition: { type: "function", function: {
+      name: "dom_read",
+      description: "Read one visible DOM element by a unique CSS selector. Includes text, selected attributes and editable value. Password values are redacted.",
+      parameters: { type: "object", properties: { selector: { type: "string" } }, required: ["selector"], additionalProperties: false },
+    } },
+    execute: async (value, signal) => JSON.stringify(await runDom(target, { action: "read", selector: parseSelector(parseArgs(value, ["selector"], ["selector"]).selector) }, signal)),
+  };
+}
+
+type DomApproval = (title: string, detail: string, signal: AbortSignal) => Promise<boolean>;
+
+export function domWriteTool(target: PageTarget, approve: DomApproval): AgentTool {
+  return {
+    definition: { type: "function", function: {
+      name: "dom_write",
+      description: "Write to a visible input, textarea, select or editable element selected by unique CSS selector. Accepts string or checkbox/radio boolean. Requires user approval. Passwords and arbitrary HTML are excluded.",
+      parameters: { type: "object", properties: { selector: { type: "string" }, value: { type: ["string", "boolean"] } }, required: ["selector", "value"], additionalProperties: false },
+    } },
+    execute: async (input, signal) => {
+      const args = parseArgs(input, ["selector", "value"], ["selector", "value"]);
+      const selector = parseSelector(args.selector);
+      const value = args.value;
+      if ((typeof value !== "string" && typeof value !== "boolean") || (typeof value === "string" && value.length > 4000)) throw new Error("쓸 값이 올바르지 않습니다.");
+      const element = await runDom(target, { action: "describe", selector }, signal);
+      const detail = `${target.url}\n${selector}\n${element.tag} ${element.label || element.text || ""}\n새 값: ${JSON.stringify(value)}`;
+      if (!await approve("엘리먼트 값 변경", detail, signal)) return JSON.stringify({ approved: false, selector });
+      return JSON.stringify(await runDom(target, { action: "write", selector, value, fingerprint: String(element.fingerprint) }, signal));
+    },
+  };
+}
+
+export function domClickTool(target: PageTarget, approve: DomApproval): AgentTool {
+  return {
+    definition: { type: "function", function: {
+      name: "dom_click",
+      description: "Click one visible DOM element selected by unique CSS selector. Requires user approval. The page may change afterward.",
+      parameters: { type: "object", properties: { selector: { type: "string" } }, required: ["selector"], additionalProperties: false },
+    } },
+    execute: async (input, signal) => {
+      const selector = parseSelector(parseArgs(input, ["selector"], ["selector"]).selector);
+      const element = await runDom(target, { action: "describe", selector }, signal);
+      if (!await approve("엘리먼트 클릭", `${target.url}\n${selector}\n${element.tag} ${element.label || element.text || ""}`, signal)) return JSON.stringify({ approved: false, selector });
+      return JSON.stringify(await runDom(target, { action: "click", selector, fingerprint: String(element.fingerprint) }, signal));
+    },
+  };
+}

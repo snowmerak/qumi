@@ -140,7 +140,7 @@ function parseToolCall(value: unknown): ToolCall {
   return { id: call.id, type: "function", function: { name: call.function.name, arguments: call.function.arguments } };
 }
 
-async function readStreamedReply(response: Response, previousConversationId: string, onDelta: (text: string) => void): Promise<ModelReply> {
+async function readStreamedReply(response: Response, previousConversationId: string, onDelta: (text: string) => void, onChunk: () => void): Promise<ModelReply> {
   if (!response.body) throw new Error("Gateway 스트림을 읽을 수 없습니다.");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -164,6 +164,7 @@ async function readStreamedReply(response: Response, previousConversationId: str
       choices?: Array<{ delta?: { content?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> } }>;
     };
     if (chunk.error) throw new Error(chunk.error.message || "Gateway 스트림이 실패했습니다.");
+    onChunk();
     if (chunk.conversation_id) conversationId = chunk.conversation_id;
     if (typeof chunk.usage?.prompt_tokens === "number") promptTokens = chunk.usage.prompt_tokens;
     if (typeof chunk.usage?.prompt_tokens_details?.cached_tokens === "number") cachedTokens = chunk.usage.prompt_tokens_details.cached_tokens;
@@ -215,13 +216,20 @@ async function readStreamedReply(response: Response, previousConversationId: str
   return { message: { role: "assistant", content, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) }, conversationId, promptTokens, cachedTokens };
 }
 
-export async function requestModel(
+function isMissingCodexRollout(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes("codex: json-rpc error -32600") && message.includes("no rollout found for thread id");
+}
+
+async function requestModelOnce(
   settings: GatewaySettings,
   messages: ModelMessage[],
   tools: ToolDefinition[],
   conversationId: string,
   signal: AbortSignal,
   onDelta?: (text: string) => void,
+  onChunk?: () => void,
 ): Promise<ModelReply> {
   const baseUrl = normalizeGatewayUrl(settings.baseUrl);
   const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -242,16 +250,34 @@ export async function requestModel(
       await readJson(response);
     } catch (error) {
       if (onDelta && [400, 422].includes(response.status) && error instanceof Error && /\bstream(?:_options|ing)?\b/i.test(error.message)) {
-        return requestModel(settings, messages, tools, conversationId, signal);
+        return requestModelOnce(settings, messages, tools, conversationId, signal);
       }
       throw error;
     }
     throw new Error(`Gateway 요청에 실패했습니다. (${response.status})`);
   }
   if (onDelta && response.headers.get("Content-Type")?.includes("text/event-stream")) {
-    return readStreamedReply(response, conversationId, onDelta);
+    return readStreamedReply(response, conversationId, onDelta, onChunk || (() => {}));
   }
   return parseModelReply(await readJson(response), conversationId);
+}
+
+export async function requestModel(
+  settings: GatewaySettings,
+  messages: ModelMessage[],
+  tools: ToolDefinition[],
+  conversationId: string,
+  signal: AbortSignal,
+  onDelta?: (text: string) => void,
+): Promise<ModelReply> {
+  let receivedChunk = false;
+  try {
+    return await requestModelOnce(settings, messages, tools, conversationId, signal, onDelta, () => { receivedChunk = true; });
+  } catch (error) {
+    if (!conversationId || receivedChunk || signal.aborted || !isMissingCodexRollout(error)) throw error;
+    // The full message history is already supplied, so a fresh provider thread can rebuild it.
+    return requestModelOnce(settings, messages, tools, "", signal, onDelta);
+  }
 }
 
 export async function completeChat(

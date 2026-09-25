@@ -74,6 +74,55 @@ describe("Q Gateway client", () => {
     assert.equal(bodies[1].stream_options, undefined);
   });
 
+  it("rebuilds a missing Codex rollout once with full history and no conversation ID", async () => {
+    const requests: Array<{ conversation_id?: string; messages: unknown[] }> = [];
+    globalThis.fetch = async (_, init) => {
+      const body = JSON.parse(String(init?.body));
+      requests.push(body);
+      return requests.length === 1
+        ? new Response(JSON.stringify({ error: { message: "codex: JSON-RPC error -32600: no rollout found for thread id stale" } }), { status: 502 })
+        : new Response(JSON.stringify({ conversation_id: "fresh", choices: [{ message: { content: "복구됨" } }] }), { status: 200 });
+    };
+    const messages = [{ role: "user" as const, content: "이전 질문" }, { role: "assistant" as const, content: "이전 답" }, { role: "user" as const, content: "다음 질문" }];
+    const reply = await requestModel(settings, messages, [], "stale", new AbortController().signal);
+    assert.equal(reply.message.content, "복구됨");
+    assert.equal(reply.conversationId, "fresh");
+    assert.deepEqual(requests.map((request) => request.conversation_id), ["stale", undefined]);
+    assert.deepEqual(requests[1].messages, messages);
+  });
+
+  it("recovers a streamed missing rollout before any response chunk", async () => {
+    const requests: Array<{ conversation_id?: string }> = [];
+    globalThis.fetch = async (_, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      const events = requests.length === 1
+        ? 'data: {"error":{"message":"codex: JSON-RPC error -32600: no rollout found for thread id stale"}}\n\n'
+        : 'data: {"conversation_id":"fresh","choices":[{"delta":{"content":"복구됨"}}]}\n\ndata: [DONE]\n\n';
+      return new Response(events, { headers: { "Content-Type": "text/event-stream" } });
+    };
+    const deltas: string[] = [];
+    const reply = await requestModel(settings, [{ role: "user", content: "질문" }], [], "stale", new AbortController().signal, (text) => deltas.push(text));
+    assert.equal(reply.message.content, "복구됨");
+    assert.deepEqual(deltas, ["복구됨"]);
+    assert.deepEqual(requests.map((request) => request.conversation_id), ["stale", undefined]);
+  });
+
+  it("does not replay after stream output or on unrelated errors", async () => {
+    let requests = 0;
+    globalThis.fetch = async () => {
+      requests++;
+      return new Response('data: {"choices":[{"delta":{"content":"부분"}}]}\n\ndata: {"error":{"message":"codex: JSON-RPC error -32600: no rollout found for thread id stale"}}\n\n', { headers: { "Content-Type": "text/event-stream" } });
+    };
+    await assert.rejects(requestModel(settings, [{ role: "user", content: "질문" }], [], "stale", new AbortController().signal, () => {}), /no rollout found/);
+    assert.equal(requests, 1);
+    globalThis.fetch = async () => {
+      requests++;
+      return new Response(JSON.stringify({ error: { message: "unrelated provider error" } }), { status: 502 });
+    };
+    await assert.rejects(requestModel(settings, [{ role: "user", content: "질문" }], [], "stale", new AbortController().signal), /unrelated provider error/);
+    assert.equal(requests, 2);
+  });
+
   it("sends prior messages and conversation_id for the next cache-aware turn", async () => {
     let request: { input?: RequestInfo | URL; init?: RequestInit } = {};
     globalThis.fetch = async (input, init) => {

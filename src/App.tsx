@@ -8,8 +8,11 @@ import {
 } from "./gateway";
 import { emptyAgentState, runTurn, type AgentState } from "./agent";
 import { emptyState, loadState, saveState } from "./storage";
+import { canReadPages, getActivePageCandidate, requestPageAccess, listOpenTabsTool, navigationTool, pageContextTool, switchTabTool, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
+import { domClickTool, domListTool, domReadTool, domWriteTool } from "./dom-tools";
 
 type Connection = "checking" | "connected" | "disconnected";
+type PendingAction = { title: string; detail: string; decide: (approved: boolean) => void };
 
 function Icon({ name }: { name: "settings" | "back" | "plus" | "send" | "eye" }): ReactElement {
   const paths = {
@@ -150,6 +153,10 @@ export function App() {
   const [streamed, setStreamed] = useState("");
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
+  const [pageTarget, setPageTarget] = useState<PageTarget | null>(null);
+  const [pageCandidate, setPageCandidate] = useState<PageCandidate | null>(null);
+  const [pageError, setPageError] = useState("");
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const messagesEnd = useRef<HTMLDivElement>(null);
   const requestController = useRef<AbortController | null>(null);
 
@@ -187,6 +194,87 @@ export function App() {
 
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, streamed, sending]);
 
+  useEffect(() => {
+    if (!canReadPages()) return;
+    let active = true;
+    let revision = 0;
+    let currentTabId: number | null = null;
+    const refresh = () => {
+      const currentRevision = ++revision;
+      currentTabId = null;
+      setPageCandidate(null);
+      void getActivePageCandidate().then((candidate) => {
+        if (active && currentRevision === revision) {
+          currentTabId = candidate?.tabId ?? null;
+          setPageCandidate(candidate);
+        }
+      }).catch(() => { if (active && currentRevision === revision) setPageCandidate(null); });
+    };
+    const onUpdated = (tabId: number, change: { status?: string; url?: string }) => {
+      if (change.url || (tabId === currentTabId && (change.status === "loading" || change.status === "complete"))) refresh();
+    };
+    refresh();
+    chrome.tabs.onActivated.addListener(refresh);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(refresh);
+    return () => {
+      active = false;
+      chrome.tabs.onActivated.removeListener(refresh);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(refresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!pageTarget || !canReadPages()) return;
+    const onActivated = ({ tabId, windowId }: { tabId: number; windowId: number }) => {
+      if (windowId === pageTarget.windowId && tabId !== pageTarget.tabId) setPageTarget(null);
+    };
+    const onUpdated = (tabId: number, change: { status?: string; url?: string }) => {
+      if (tabId === pageTarget.tabId && (change.status === "loading" || (change.url && change.url !== pageTarget.url))) setPageTarget(null);
+    };
+    const onRemoved = (tabId: number) => { if (tabId === pageTarget.tabId) setPageTarget(null); };
+    chrome.tabs.onActivated.addListener(onActivated);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+    return () => {
+      chrome.tabs.onActivated.removeListener(onActivated);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+    };
+  }, [pageTarget]);
+
+  useEffect(() => () => requestController.current?.abort(), []);
+
+  async function attachPage() {
+    setPageError("");
+    if (!pageCandidate) { setPageError("일반 HTTP(S) 웹페이지를 연 뒤 다시 연결해 주세요."); return; }
+    try { setPageTarget(await requestPageAccess(pageCandidate)); }
+    catch (cause) { setPageTarget(null); setPageError(cause instanceof Error ? cause.message : "페이지에 연결하지 못했습니다."); }
+  }
+
+  function approveAction(title: string, detail: string, signal: AbortSignal): Promise<boolean> {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) { reject(signal.reason); return; }
+      const onAbort = () => {
+        setPendingAction((current) => current?.decide === decide ? null : current);
+        reject(signal.reason);
+      };
+      const decide = (approved: boolean) => {
+        signal.removeEventListener("abort", onAbort);
+        setPendingAction(null);
+        resolve(approved);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      setPendingAction({ title, detail, decide });
+    });
+  }
+
+  function approveNavigation(url: string, disposition: TabAction, signal: AbortSignal): Promise<boolean> {
+    const title = disposition === "new_tab" ? "새 탭 열기" : disposition === "existing_tab" ? "기존 탭 전환" : "현재 탭 이동";
+    return approveAction(title, url, signal);
+  }
+
   function saveSettings(next: GatewaySettings, found: GatewayModel[]) {
     if (next.baseUrl !== settings.baseUrl || next.apiKey !== settings.apiKey || next.model !== settings.model || next.contextWindowOverride !== settings.contextWindowOverride) {
       setMessages([]);
@@ -222,6 +310,13 @@ export function App() {
     try {
       const result = await runTurn({
         settings, contextWindow, state: agent, prompt: content, signal: controller.signal,
+        tools: pageTarget ? [
+          pageContextTool(pageTarget), domListTool(pageTarget), domReadTool(pageTarget),
+          domWriteTool(pageTarget, approveAction), domClickTool(pageTarget, approveAction),
+          listOpenTabsTool(pageTarget),
+          navigationTool(pageTarget, approveNavigation, () => setPageTarget(null)),
+          switchTabTool(pageTarget, approveNavigation, () => setPageTarget(null)),
+        ] : [],
         onEvent: (event) => {
           if (event.type === "delta") setStreamed((current) => current + event.text);
           if (event.type === "compacting") { setProgress("문맥 압축 중…"); setStreamed(""); }
@@ -244,6 +339,7 @@ export function App() {
 
   const contextWindow = settings.contextWindowOverride || models.find((model) => model.id === settings.model)?.contextLength || 0;
   const canSend = connection === "connected" && !!settings.model && contextWindow > 0 && !sending;
+  const pageAccessAvailable = canReadPages();
 
   return (
     <div className="app-shell">
@@ -270,6 +366,16 @@ export function App() {
             <button className="mp-button mp-button--ghost icon-button new-chat" type="button" aria-label="새 대화" title="새 대화" onClick={() => { setMessages([]); setAgent(emptyAgentState()); setError(""); }} disabled={sending || messages.length === 0}><Icon name="plus" /></button>
           </div>
 
+          <div className="page-bar">
+            <div className="page-bar__context">
+              <span className="page-bar__label">현재 페이지</span>
+              <span className="page-bar__title" title={pageTarget?.url || pageCandidate?.url}>{pageTarget ? `${pageTarget.title} · ${pageTarget.url}` : pageAccessAvailable ? pageCandidate ? `${pageCandidate.title} · ${pageCandidate.url}` : "연결할 웹페이지 없음" : "Chrome 확장에서 연결 가능"}</span>
+              <span className="page-bar__hint">{pageTarget ? "페이지를 읽으면 내용이 Q Gateway에 전달됩니다." : pageAccessAvailable ? pageCandidate ? `${new URL(pageCandidate.url).hostname} 접근 권한을 Chrome에 요청합니다. 권한은 사이트 단위로 저장됩니다.` : "일반 HTTP(S) 웹페이지를 열어 주세요." : "확장을 Chrome에 로드하면 연결할 수 있습니다."}</span>
+              {pageError && <span className="page-bar__error" role="alert">{pageError}</span>}
+            </div>
+            <button className="mp-button mp-button--secondary" type="button" onClick={() => void attachPage()} disabled={sending || !pageAccessAvailable || !pageCandidate}>{pageTarget ? "다시 연결" : "연결"}</button>
+          </div>
+
           <main className="chat-history" aria-label="대화 내용">
             {messages.length === 0 && (
               <div className="empty-chat">
@@ -294,6 +400,11 @@ export function App() {
           </main>
 
           <form className="composer" onSubmit={(event) => void send(event)}>
+            {pendingAction && <div className="navigation-request" role="dialog" aria-label="브라우저 작업 확인">
+              <strong>{pendingAction.title}</strong>
+              <span>{pendingAction.detail}</span>
+              <div><button className="mp-button mp-button--ghost" type="button" onClick={() => pendingAction.decide(false)}>취소</button><button className="mp-button mp-button--primary" type="button" onClick={() => pendingAction.decide(true)}>실행</button></div>
+            </div>}
             {error && <div className="composer__error" role="alert">{error}</div>}
             {connection === "connected" && !contextWindow && <div className="composer__error" role="status">설정에서 이 모델의 문맥 길이를 입력해 주세요.</div>}
             <label className="sr-only" htmlFor="chat-input">Q에게 물어보기</label>

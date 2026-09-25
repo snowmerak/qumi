@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test src/gateway.test.ts src/agent.test.ts",
+    "test": "node --experimental-strip-types --test src/gateway.test.ts src/agent.test.ts src/page-context.test.ts src/dom-tools.test.ts",
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {

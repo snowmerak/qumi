@@ -6,7 +6,7 @@
 
 ## 현재 출발점과 목표
 
-현재 Qumi는 Chrome MV3 사이드 패널에서 Q Gateway의 `/v1/models`와 스트리밍 `/v1/chat/completions`를 호출한다. TypeScript 루프가 모델 도구 호출과 결과 전달, 턴 상한·취소, 문맥 압축을 처리한다. 전체 대화와 압축 문맥, `conversation_id`를 로컬에 저장한다. 화면에서 브라우저 도구를 아직 등록하지 않았으므로 현재 웹페이지는 읽지 않는다. 현재 코드의 기준은 [`src/gateway.ts`](../src/gateway.ts), [`src/agent.ts`](../src/agent.ts), [`src/storage.ts`](../src/storage.ts), [`public/manifest.json`](../public/manifest.json)이다.
+현재 Qumi는 Chrome MV3 사이드 패널에서 Q Gateway의 `/v1/models`와 스트리밍 `/v1/chat/completions`를 호출한다. TypeScript 루프가 모델 도구 호출과 결과 전달, 턴 상한·취소, 문맥 압축을 처리한다. 전체 대화와 압축 문맥, `conversation_id`를 로컬에 저장한다. 연결한 현재 탭의 URL·제목·본문을 읽고, 사용자가 확인한 URL로 이동하거나 새 탭을 열 수 있다. 현재 코드의 기준은 [`src/gateway.ts`](../src/gateway.ts), [`src/agent.ts`](../src/agent.ts), [`src/page-context.ts`](../src/page-context.ts), [`src/storage.ts`](../src/storage.ts), [`public/manifest.json`](../public/manifest.json)이다.
 
 목표는 **사용자가 선택한 현재 탭의 내용을 읽어 질문에 답하고, 필요할 때 허용된 브라우저 도구를 여러 차례 호출하며, 긴 대화를 압축해 계속 이어가는 작은 도우미**다. 모델 연결에는 우선 기존 Q Gateway를 사용한다. Qumi가 대화·압축 문맥·브라우저 도구 실행을 소유하며 `q remote`, Q의 세션 저장소, 로컬 파일 도구를 요구하지 않는다.
 
@@ -14,8 +14,10 @@
 
 - 완료: `/v1/models`의 `context_length` 사용과 수동 설정, SSE 텍스트·도구 호출 조각 결합, JSON 응답 대체, 도구 실행 루프의 허용 목록·오류·상한·취소.
 - 완료: 전체 대화와 모델 문맥 분리, 85% 압축 시작·22% 목표·7% 최근 기록, 긴 기록 분할 요약, 이전 사실 병합, 실패 시 이전 문맥 보존, 압축 후 `conversation_id` 초기화.
+- 완료: Codex의 이전 `conversation_id`에 해당하는 rollout이 없으면 전체 메시지를 유지한 채 ID를 비우고 한 번 재시도한다. 스트림 응답이 시작된 뒤에는 중복 응답을 피하기 위해 재시도하지 않는다.
 - 완료: 마지막 완료 턴의 상태를 하나의 `chrome.storage.local` 항목으로 저장하고 기존 채팅 기록을 읽는 이전 처리. 모의 Gateway 단위 시험과 개발 화면의 SSE 확인.
-- 남음: 실제 Gateway와 사용할 모델에서 스트리밍·도구 호출·문맥 메타데이터 확인, 브라우저 페이지 도구와 권한, IndexedDB 저장 이전, Chrome 확장 통합 시험. 현재 `storage.local`의 기본 용량 한도는 긴 전체 대화에서 제약이 된다.
+- 완료: 사이트별 선택적 접근 권한과 `scripting`으로 사용자가 연결한 탭의 URL·제목·선택 텍스트·보이는 본문·일부 링크 읽기. `tabs`로 같은 창의 웹 탭 목록을 확인한다. URL 이동·새 탭 열기·기존 탭 전환은 사용자에게 목적지를 확인받는다. 탭 전환·페이지 로딩 후 연결을 끊는다.
+- 남음: 실제 Gateway와 사용할 모델에서 스트리밍·도구 호출·문맥 메타데이터 확인, 실제 Chrome 확장 권한·탭 이동 통합 시험, IndexedDB 저장 이전. 현재 `storage.local`의 기본 용량 한도는 긴 전체 대화에서 제약이 된다.
 
 ## Q에서 가져올 동작
 
@@ -25,7 +27,7 @@
 | 도구가 끝나거나 일반 어시스턴트 응답이 오면 턴을 종료한다 (`q/agentloop/loop.go`). | 필수. 최대 모델 왕복 수·도구 호출 수·실행 시간을 두고 취소를 전달한다. 브라우저 작업에서는 무한 루프를 허용하지 않는다. |
 | 이벤트를 순서대로 소비하고 최종 응답과 모델 문맥을 구분한다 (`q/agentloop/types.go`). | 필수. 사용자에게 보이는 대화와 모델에 보내는 도구 포함 기록을 분리한다. 실행 중 상태는 메모리에 두고 완료된 턴을 체크포인트와 함께 영구 저장한다. |
 | 모델 문맥의 사용량을 추정하고 긴 대화를 체크포인트로 압축한다 (`q/memory/manager.go`, `checkpoint.go`, `q/agentloop/context.go`). | **첫 릴리스 필수.** 전체 대화 기록과 압축 문맥을 분리해 저장하고, 압축 후에도 현재 요청·확정된 사실·미완료 작업을 이어간다. 아래 압축 계약을 따른다. |
-| 스트림 조각과 도구 인수를 합치고, 빈 응답과 공급자 대화 오류에서 복구한다 (`q/agentloop/chat_stream.go`, `chat_recovery.go`). | 스트리밍과 JSON 응답 대체, 빈 응답 오류는 구현했다. 공급자별 대화 오류 복구는 실제 Gateway·모델 검증 후 판단한다. |
+| 스트림 조각과 도구 인수를 합치고, 빈 응답과 공급자 대화 오류에서 복구한다 (`q/agentloop/chat_stream.go`, `chat_recovery.go`). | 스트리밍과 JSON 응답 대체, 사라진 Codex rollout에 대한 한 번의 새 대화 재시도는 구현했다. 빈 응답에 대한 Q의 추가 복구 정책은 별도로 남아 있다. |
 | `task_start`, `ask_to_user`, `task_complete`와 활성 작업 복원 (`q/agentloop/orchestration.go`). | Q 형식 그대로 옮기지 않는다. 사용자 확인은 Qumi UI에서 처리하고, 긴 작업 수명주기는 실제 수요가 생기면 설계한다. |
 
 Q의 별도 Workspace Memory 서비스, Skills, MCP, 서브에이전트, 파일·셸 도구, 복잡한 모델 라우팅은 브라우저 도우미의 첫 범위에서 제외한다. Loom도 가져오지 않는다. **대화 문맥 압축은 이 제외 목록과 무관하며 첫 범위에 포함한다.**
@@ -35,14 +37,14 @@ Q의 별도 Workspace Memory 서비스, Skills, MCP, 서브에이전트, 파일�
 ```text
 사이드 패널: 턴 상태·전체 대화·압축 문맥·모델 요청·취소
       ├─ Q Gateway: OpenAI 호환 채팅 + 도구 호출 응답
-      └─ Chrome scripting: 사용자가 지정한 탭에서 페이지 읽기
+      └─ Chrome tabs/scripting: 연결한 탭 읽기·확인 후 URL 이동
 ```
 
 사이드 패널을 실행 중인 턴의 소유자로 둔다. Chrome의 서비스 워커가 꺼졌다 다시 켜져도 루프 상태에 의존하지 않도록 한다. 패널이 닫혀 실행이 끊기면 진행 중이던 턴을 버리고, 마지막으로 완료되어 저장된 턴에서 새 요청을 시작한다.
 
-확장에 `activeTab`과 `scripting` 권한을 추가하고, 사용자가 Qumi를 호출한 탭을 `tabId`와 URL로 묶는다. 주입한 스크립트는 제목, URL, 선택한 텍스트, 주요 본문, 필요한 링크처럼 제한된 구조화 결과만 반환한다. 페이지 전환이나 권한 상실 시 도구 오류를 반환하고 다시 탭을 지정하게 한다. `activeTab` 접근은 사용자가 확장을 호출한 탭에 일시적으로 주어지므로, 다른 탭을 자동으로 계속 읽는다고 가정하지 않는다. [Chrome `activeTab`](https://developer.chrome.com/docs/extensions/develop/concepts/activeTab), [Chrome scripting API](https://developer.chrome.com/docs/extensions/reference/api/scripting).
+확장에 `scripting`, `tabs`와 선택적 HTTP(S) 사이트 권한을 선언하고, 사용자가 **연결**을 누르면 현재 사이트의 접근 권한을 Chrome에 요청한다. 허용된 권한은 Chrome에 사이트 단위로 보존된다. Qumi는 연결한 탭을 `tabId`와 URL로 묶고, 탭이나 페이지가 바뀌면 다시 연결하게 한다. `tabs`는 같은 창에 열린 다른 탭의 URL·제목을 모델이 찾는 데 쓴다. 주입한 스크립트는 제목, URL, 선택한 텍스트, 주요 본문, 일부 링크처럼 제한된 구조화 결과만 반환한다. [Chrome permissions API](https://developer.chrome.com/docs/extensions/reference/api/permissions), [Chrome scripting API](https://developer.chrome.com/docs/extensions/reference/api/scripting), [tabs API](https://developer.chrome.com/docs/extensions/reference/api/tabs).
 
-첫 도구 목록은 읽기 전용 `get_page_context` 정도로 제한한다. 페이지 텍스트는 외부 자료로 취급하고 지시문으로 승격하지 않는다. 비밀번호·입력 폼 값·숨겨진 DOM을 수집하지 않으며, 페이지와 도구 결과에 크기 상한을 둔다. 클릭·입력·탭 이동은 요소 식별, 탐색 후 상태 확인, 사용자 확인 UI가 필요한 별도 단계다.
+브라우저 도구는 `get_current_page`, `list_open_tabs`, `navigate_to_url`, `switch_to_tab`, `dom_list`, `dom_read`, `dom_write`, `dom_click`이다. DOM 탐색은 `body`에서 시작해 보이는 직계 자식과 CSS 선택자를 반환한다. 읽기·쓰기·클릭은 선택자가 한 요소와 일치할 때만 실행한다. 페이지 텍스트는 외부 자료로 취급하고 지시문으로 승격하지 않는다. 비밀번호 값·숨겨진 DOM은 수집하지 않으며, 페이지와 도구 결과에 크기 상한을 둔다. URL 이동은 HTTP(S) 절대 주소만 허용하고, 탭 전환·클릭·입력은 매번 사용자의 확인을 받는다.
 
 모델 왕복은 압축 문맥과 허용된 `tools`를 Gateway에 보내고, `tool_calls`가 오면 각 호출을 검증·실행해 도구 결과를 문맥과 전체 대화 기록에 넣은 다음 다시 요청하는 형태다. 마지막 일반 응답으로 턴을 확정한다. 현재는 도구 호출을 포함한 전체 기록과 모델 요청용 압축 문맥을 분리해 하나의 `chrome.storage.local` 항목에 보존한다. 전체 기록은 압축 후에도 커질 수 있으므로, 이후에는 IndexedDB에 두고 마지막 완료 턴의 기록·압축 문맥·체크포인트·`conversation_id`를 한 트랜잭션에서 갱신하는 안을 우선 검토한다. Chrome은 `storage.local`에 기본 용량 제한을 두며 확장 페이지에서 IndexedDB를 사용할 수 있다. [Chrome 저장소 문서](https://developer.chrome.com/docs/extensions/develop/concepts/storage-and-cookies), [storage API](https://developer.chrome.com/docs/extensions/reference/api/storage).
 
