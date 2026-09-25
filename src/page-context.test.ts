@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { capturePageTarget, getActivePageCandidate, hasPageAccess, requestPageAccess, listOpenTabsTool, navigationTool, readPageContext, switchTabTool, type PageTarget } from "./page-context.ts";
+import { capturePageTarget, getActiveBrowserTab, getActivePageCandidate, hasPageAccess, requestPageAccess, listOpenTabsTool, navigationTool, readPageContext, switchTabTool, type PageTarget } from "./page-context.ts";
 import { domClickTool, domListTool, domReadTool, domWriteManyTool, domWriteTool } from "./dom-tools.ts";
 
 const originalChrome = Object.getOwnPropertyDescriptor(globalThis, "chrome");
@@ -134,7 +134,7 @@ describe("Chrome page tools", () => {
     assert.deepEqual(creates, [{ windowId: 2, url: "https://example.net/", active: true }]);
   });
 
-  it("lists web tabs in the same window and confirms an existing-tab switch", async () => {
+  it("lists every tab in the same window and confirms an existing-tab switch", async () => {
     const updates: number[] = [];
     mockChrome({
       tabs: {
@@ -151,15 +151,40 @@ describe("Chrome page tools", () => {
     });
     const signal = new AbortController().signal;
     const tabs = JSON.parse(await listOpenTabsTool(target).execute({}, signal));
-    assert.deepEqual(tabs.map((tab: { tabId: number }) => tab.tabId), [7, 8]);
+    assert.deepEqual(tabs.map((tab: { tabId: number }) => tab.tabId), [7, 8, 9]);
+    const approvals: string[] = [];
     const switched = switchTabTool(target, async (url, action) => {
-      assert.equal(url, "https://example.org/");
+      approvals.push(url);
       assert.equal(action, "existing_tab");
       return true;
     }, () => {});
     assert.match(await switched.execute({ tabId: 8 }, signal), /"pageChanged":true/);
     assert.deepEqual(updates, [8]);
-    await assert.rejects(switched.execute({ tabId: 9 }, signal), /웹 탭을 찾지 못했습니다/);
+    assert.match(await switched.execute({ tabId: 9 }, signal), /"pageChanged":true/);
+    assert.deepEqual(updates, [8, 9]);
+    assert.deepEqual(approvals, ["https://example.org/", "chrome://settings"]);
+  });
+
+  it("allows navigation and tab switching from a Vivaldi start page without DOM access", async () => {
+    const startPage: PageTarget = { tabId: 7, windowId: 2, url: "vivaldi://startpage/", title: "Start Page" };
+    const updates: Array<{ tabId: number; options: { url?: string; active?: boolean } }> = [];
+    mockChrome({ tabs: {
+      query: async (options: { active?: boolean }) => options.active
+        ? [{ id: 7, windowId: 2, url: startPage.url, title: startPage.title }]
+        : [{ id: 7, windowId: 2, url: startPage.url, title: startPage.title }, { id: 8, windowId: 2, url: "chrome://settings/", title: "Settings" }],
+      update: async (tabId: number, options: { url?: string; active?: boolean }) => { updates.push({ tabId, options }); return { id: tabId }; },
+    } });
+    assert.deepEqual(await getActiveBrowserTab(), startPage);
+    assert.equal(await getActivePageCandidate(), null);
+    const signal = new AbortController().signal;
+    const tabs = JSON.parse(await listOpenTabsTool(startPage).execute({}, signal));
+    assert.deepEqual(tabs.map((tab: { tabId: number }) => tab.tabId), [7, 8]);
+    assert.match(await navigationTool(startPage, async () => true, () => {}).execute({ url: "https://example.com", disposition: "current_tab" }, signal), /"pageChanged":true/);
+    assert.match(await switchTabTool(startPage, async () => true, () => {}).execute({ tabId: 8 }, signal), /"pageChanged":true/);
+    assert.deepEqual(updates, [
+      { tabId: 7, options: { url: "https://example.com/" } },
+      { tabId: 8, options: { active: true } },
+    ]);
   });
 
   it("uses CSS selectors for DOM traversal and reads", async () => {

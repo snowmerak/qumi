@@ -7,6 +7,8 @@ export interface PageTarget {
   title: string;
 }
 
+export type BrowserTabTarget = PageTarget;
+
 export type PageCandidate = PageTarget & { loading?: boolean };
 
 export type NavigationDisposition = "current_tab" | "new_tab";
@@ -49,6 +51,13 @@ export async function getActivePageCandidate(): Promise<PageCandidate | null> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || tab.id === undefined || tab.windowId === undefined || !isWebUrl(tab.url)) return null;
   return { tabId: tab.id, windowId: tab.windowId, url: tab.url, title: tab.title || tab.url, ...(tab.status === "loading" ? { loading: true } : {}) };
+}
+
+export async function getActiveBrowserTab(): Promise<BrowserTabTarget | null> {
+  if (typeof chrome === "undefined" || !chrome.tabs?.query) return null;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || tab.id === undefined || tab.windowId === undefined) return null;
+  return { tabId: tab.id, windowId: tab.windowId, url: tab.url ?? "", title: tab.title || tab.url || "새 탭" };
 }
 
 function pagePermissionPattern(url: string): string {
@@ -143,6 +152,11 @@ async function assertCurrentTarget(target: PageTarget): Promise<void> {
   if (!active || active.id !== target.tabId || active.url !== target.url) throw new Error(pageChanged);
 }
 
+async function assertCurrentTab(target: BrowserTabTarget): Promise<void> {
+  const [active] = await chrome.tabs.query({ active: true, windowId: target.windowId });
+  if (!active || active.id !== target.tabId || (active.url ?? "") !== target.url) throw new Error(pageChanged);
+}
+
 export async function readPageContext(target: PageTarget, signal: AbortSignal): Promise<PageSnapshot> {
   signal.throwIfAborted();
   await assertCurrentTarget(target);
@@ -179,7 +193,7 @@ export function pageContextTool(target: PageTarget): AgentTool {
 }
 
 export function navigationTool(
-  target: PageTarget,
+  target: BrowserTabTarget,
   approve: (url: string, disposition: TabAction, signal: AbortSignal) => Promise<boolean>,
   onNavigated: () => void,
 ): AgentTool {
@@ -188,7 +202,7 @@ export function navigationTool(
       type: "function",
       function: {
         name: "navigate_to_url",
-        description: "Navigate the connected Chrome tab to an HTTP(S) URL or open the URL in a new tab. Confirmation follows the browser work setting. Qumi reconnects after load when browser site access is granted.",
+        description: "Navigate the active browser tab, including a browser start page, to an HTTP(S) URL or open the URL in a new tab. Does not require page DOM access. Confirmation follows the browser work setting. Qumi reconnects after load when browser site access is granted.",
         parameters: {
           type: "object",
           properties: {
@@ -207,10 +221,10 @@ export function navigationTool(
       const url = navigationUrl(args.url);
       const disposition = args.disposition;
       if (disposition !== "current_tab" && disposition !== "new_tab") throw new Error("탭 이동 방식이 올바르지 않습니다.");
-      await assertCurrentTarget(target);
+      await assertCurrentTab(target);
       if (!await approve(url, disposition, signal)) return JSON.stringify({ approved: false, url });
       signal.throwIfAborted();
-      await assertCurrentTarget(target);
+      await assertCurrentTab(target);
       const tab = disposition === "current_tab"
         ? await chrome.tabs.update(target.tabId, { url })
         : await chrome.tabs.create({ windowId: target.windowId, url, active: true });
@@ -220,13 +234,13 @@ export function navigationTool(
   };
 }
 
-export function listOpenTabsTool(target: PageTarget): AgentTool {
+export function listOpenTabsTool(target: BrowserTabTarget): AgentTool {
   return {
     definition: {
       type: "function",
       function: {
         name: "list_open_tabs",
-        description: "List the open HTTP(S) tabs in the connected page's Chrome window with their tab IDs, URLs, and titles. Use this to find a tab before switching to it.",
+        description: "List open tabs in the active Chrome window, including browser start and internal pages, with their tab IDs, URLs, and titles. Does not require page DOM access. Use this to find a tab before switching to it.",
         parameters: { type: "object", properties: {}, additionalProperties: false },
       },
     },
@@ -235,18 +249,18 @@ export function listOpenTabsTool(target: PageTarget): AgentTool {
         throw new Error("list_open_tabs에는 인수가 필요하지 않습니다.");
       }
       signal.throwIfAborted();
-      await assertCurrentTarget(target);
+      await assertCurrentTab(target);
       const tabs = await chrome.tabs.query({ windowId: target.windowId });
       signal.throwIfAborted();
-      return JSON.stringify(tabs.filter((tab) => tab.id !== undefined && isWebUrl(tab.url)).slice(0, 50).map((tab) => ({
-        tabId: tab.id, url: tab.url, title: tab.title ?? "", active: !!tab.active,
+      return JSON.stringify(tabs.filter((tab) => tab.id !== undefined).slice(0, 50).map((tab) => ({
+        tabId: tab.id, url: tab.url ?? "", title: tab.title ?? "", active: !!tab.active,
       })));
     },
   };
 }
 
 export function switchTabTool(
-  target: PageTarget,
+  target: BrowserTabTarget,
   approve: (url: string, disposition: TabAction, signal: AbortSignal) => Promise<boolean>,
   onSwitched: () => void,
 ): AgentTool {
@@ -255,7 +269,7 @@ export function switchTabTool(
       type: "function",
       function: {
         name: "switch_to_tab",
-        description: "Switch to an existing HTTP(S) tab from list_open_tabs in the same Chrome window. Confirmation follows the browser work setting. Qumi reconnects after load when browser site access is granted.",
+        description: "Switch to any existing tab from list_open_tabs in the same Chrome window, including browser start and internal pages. Does not require page DOM access. Confirmation follows the browser work setting.",
         parameters: { type: "object", properties: { tabId: { type: "integer" } }, required: ["tabId"], additionalProperties: false },
       },
     },
@@ -264,19 +278,19 @@ export function switchTabTool(
       const args = argumentsValue as Record<string, unknown>;
       if (!Number.isSafeInteger(args.tabId) || Object.keys(args).some((key) => key !== "tabId")) throw new Error("탭 ID가 올바르지 않습니다.");
       signal.throwIfAborted();
-      await assertCurrentTarget(target);
+      await assertCurrentTab(target);
       const tabs = await chrome.tabs.query({ windowId: target.windowId });
       const selected = tabs.find((tab) => tab.id === args.tabId);
-      if (!selected || !isWebUrl(selected.url)) throw new Error("이 창에서 해당 웹 탭을 찾지 못했습니다.");
+      if (!selected) throw new Error("이 창에서 해당 탭을 찾지 못했습니다.");
       if (selected.id === target.tabId) return JSON.stringify({ switched: false, reason: "already_active" });
-      if (!await approve(selected.url, "existing_tab", signal)) return JSON.stringify({ approved: false, tabId: selected.id });
+      if (!await approve(selected.url || selected.title || "새 탭", "existing_tab", signal)) return JSON.stringify({ approved: false, tabId: selected.id });
       signal.throwIfAborted();
-      await assertCurrentTarget(target);
+      await assertCurrentTab(target);
       const current = (await chrome.tabs.query({ windowId: target.windowId })).find((tab) => tab.id === selected.id);
       if (!current || current.url !== selected.url) throw new Error("대상 탭이 바뀌었습니다. 탭 목록을 다시 확인해 주세요.");
       await chrome.tabs.update(selected.id, { active: true });
       onSwitched();
-      return JSON.stringify({ approved: true, tabId: selected.id, url: selected.url, pageChanged: true });
+      return JSON.stringify({ approved: true, tabId: selected.id, url: selected.url ?? "", pageChanged: true });
     },
   };
 }

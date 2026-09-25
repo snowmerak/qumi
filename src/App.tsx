@@ -9,7 +9,7 @@ import { emptyAgentState, runTurn, type AgentState } from "./agent";
 import { approvalPolicyFrom, requiresBrowserApproval, withReadApproval } from "./browser-approval";
 import { clearExecutionLog, createExecutionLog, readExecutionLog } from "./execution-log";
 import { emptyState, loadState, saveState, type AppSettings } from "./storage";
-import { canReadPages, capturePageTarget, getActivePageCandidate, hasPageAccess, requestPageAccess, listOpenTabsTool, navigationTool, pageContextTool, switchTabTool, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
+import { canReadPages, capturePageTarget, getActiveBrowserTab, getActivePageCandidate, hasPageAccess, requestPageAccess, listOpenTabsTool, navigationTool, pageContextTool, switchTabTool, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
 import { domClickTool, domListTool, domReadTool, domWriteManyTool, domWriteTool, scrollAllTextTool } from "./dom-tools";
 import { sendKeyTool, sendKeysTool } from "./keyboard-tools";
 import { promptWithSelections, type PageSelection } from "./page-selection";
@@ -452,20 +452,26 @@ export function App() {
     setError("");
     setSending(true);
     try {
+      const browserTab = await getActiveBrowserTab();
+      const connectedPage = pageTarget && browserTab?.tabId === pageTarget.tabId && browserTab.url === pageTarget.url ? pageTarget : null;
       const result = await runTurn({
         settings, contextWindow, state: agent, prompt: promptWithSelections(content, selections), signal: controller.signal,
         onTrace: executionLog.record,
-        tools: pageTarget ? [
-          withReadApproval(pageContextTool(pageTarget), pageTarget, settings.approvalPolicy, approveAction),
-          withReadApproval(domListTool(pageTarget), pageTarget, settings.approvalPolicy, approveAction),
-          withReadApproval(domReadTool(pageTarget), pageTarget, settings.approvalPolicy, approveAction),
-          withReadApproval(scrollAllTextTool(pageTarget, Math.max(1_024, Math.min(48_000, contextWindow - 512))), pageTarget, settings.approvalPolicy, approveAction),
-          domWriteTool(pageTarget, approveChange), domWriteManyTool(pageTarget, approveChange), domClickTool(pageTarget, approveChange),
-          sendKeyTool(pageTarget, approveChange), sendKeysTool(pageTarget, approveChange),
-          withReadApproval(listOpenTabsTool(pageTarget), pageTarget, settings.approvalPolicy, approveAction),
-          navigationTool(pageTarget, approveNavigation, () => setPageTarget(null)),
-          switchTabTool(pageTarget, approveNavigation, () => setPageTarget(null)),
-        ] : [],
+        tools: [
+          ...(connectedPage ? [
+            withReadApproval(pageContextTool(connectedPage), connectedPage, settings.approvalPolicy, approveAction),
+            withReadApproval(domListTool(connectedPage), connectedPage, settings.approvalPolicy, approveAction),
+            withReadApproval(domReadTool(connectedPage), connectedPage, settings.approvalPolicy, approveAction),
+            withReadApproval(scrollAllTextTool(connectedPage, Math.max(1_024, Math.min(48_000, contextWindow - 512))), connectedPage, settings.approvalPolicy, approveAction),
+            domWriteTool(connectedPage, approveChange), domWriteManyTool(connectedPage, approveChange), domClickTool(connectedPage, approveChange),
+            sendKeyTool(connectedPage, approveChange), sendKeysTool(connectedPage, approveChange),
+          ] : []),
+          ...(browserTab ? [
+            withReadApproval(listOpenTabsTool(browserTab), browserTab, settings.approvalPolicy, approveAction),
+            navigationTool(browserTab, approveNavigation, () => setPageTarget(null)),
+            switchTabTool(browserTab, approveNavigation, () => setPageTarget(null)),
+          ] : []),
+        ],
         onEvent: (event) => {
           if (event.type === "model") setProgress("모델 응답 대기 중…");
           if (event.type === "thinking" && !responseStarted.current) {
@@ -532,7 +538,7 @@ export function App() {
             <div className="page-bar__context">
               <span className="page-bar__label">현재 페이지</span>
               <span className="page-bar__title" title={pageTarget?.url || pageCandidate?.url}>{pageTarget ? `${pageTarget.title} · ${pageTarget.url}` : pageAccessAvailable ? pageCandidate ? `${pageCandidate.title} · ${pageCandidate.url}` : "연결할 웹페이지 없음" : "Chrome 확장에서 연결 가능"}</span>
-              <span className="page-bar__hint">{pageTarget ? "페이지를 읽으면 내용이 Q Gateway에 전달됩니다." : pageAccessAvailable ? pageCandidate ? pageCandidate.loading ? "페이지 로딩 중…" : "페이지 로드 후 자동 연결됩니다. 브라우저에서 사이트 접근을 제한했다면 연결을 눌러 주세요." : "일반 HTTP(S) 웹페이지를 열어 주세요." : "확장을 Chrome에 로드하면 연결할 수 있습니다."}</span>
+              <span className="page-bar__hint">{pageTarget ? "페이지를 읽으면 내용이 Q Gateway에 전달됩니다." : pageAccessAvailable ? pageCandidate ? pageCandidate.loading ? "페이지 로딩 중…" : "페이지 로드 후 자동 연결됩니다. 브라우저에서 사이트 접근을 제한했다면 연결을 눌러 주세요." : "본문 연결은 일반 HTTP(S) 페이지에서 가능합니다. 주소 이동과 탭 전환은 사용할 수 있습니다." : "확장을 Chrome에 로드하면 연결할 수 있습니다."}</span>
               {pageError && <span className="page-bar__error" role="alert">{pageError}</span>}
             </div>
             {!pageTarget && <button className="mp-button mp-button--secondary" type="button" onClick={() => void attachPage()} disabled={sending || !pageAccessAvailable || !pageCandidate || !!pageCandidate.loading}>연결</button>}
