@@ -60,6 +60,18 @@
 .message--user { margin-left: 26px; }
 .message--user .message__content { background: var(--mp-bg-elevated); }
 .message__meta { margin: 0; color: var(--mp-text-muted); font-family: var(--font-mono); font-size: 0.67rem; }
+.selection-notes { display: grid; justify-items: start; gap: 6px; min-width: 0; }
+.selection-note { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; max-width: 100%; border: 1px solid var(--mp-line-soft); border-radius: var(--radius-sm); color: var(--mp-text-secondary); background: var(--mp-bg-inset); }
+.selection-note__trigger, .selection-note__remove { min-height: 25px; padding: 3px 8px; border: 0; color: inherit; background: transparent; font-size: 0.7rem; cursor: pointer; }
+.selection-note__trigger:hover, .selection-note__trigger:focus-visible, .selection-note__remove:hover { color: var(--mp-text-primary); }
+.selection-note__remove { padding-inline: 5px 8px; font-size: 1rem; line-height: 1; }
+.selection-note__detail { display: none; flex: 0 0 100%; width: min(360px, calc(100vw - 92px)); max-width: 100%; min-width: 0; padding: 8px 10px 10px; border-top: 1px solid var(--mp-line-soft); font-size: 0.72rem; line-height: 1.45; }
+.selection-note:hover .selection-note__detail, .selection-note:focus-within .selection-note__detail, .selection-note--expanded .selection-note__detail { display: block; }
+.selection-note__source, .selection-note__selector { overflow-wrap: anywhere; }
+.selection-note__source { color: var(--mp-text-tertiary); }
+.selection-note__selector { margin-top: 4px; color: var(--mp-accent-200); font-family: var(--font-mono); }
+.selection-note__section { margin-top: 8px; color: var(--mp-text-muted); font-size: 0.67rem; font-weight: 700; }
+.selection-note pre { max-height: 130px; margin: 4px 0 0; overflow: auto; color: var(--mp-text-secondary); font-family: var(--font-mono); font-size: 0.68rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .pending-message { display: flex; align-items: center; gap: 10px; color: var(--mp-text-tertiary); font-size: 0.82rem; }
 .pending-message .mp-spinner { width: 16px; height: 16px; }
 .thinking-preview { display: grid; gap: 6px; min-width: 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--mp-bg-inset); box-shadow: inset 2px 0 0 var(--mp-accent-500); }
@@ -67,6 +79,9 @@
 .thinking-preview__content { max-height: 190px; margin: 0; overflow-y: auto; color: var(--mp-text-secondary); font-size: 0.78rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .composer { display: grid; gap: 10px; padding: 16px 20px 18px; background: var(--mp-bg-surface); }
+.composer__selection-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.composer__selection-actions .mp-button { min-height: 29px; padding: 4px 8px; font-size: 0.72rem; }
+.composer__selection-actions span { color: var(--mp-text-muted); font-size: 0.68rem; }
 .composer .mp-textarea { min-height: 76px; max-height: 200px; resize: vertical; }
 .composer__footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .composer__footer span { color: var(--mp-text-muted); font-family: var(--font-mono); font-size: 0.67rem; }

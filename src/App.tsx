@@ -11,6 +11,7 @@ import { clearExecutionLog, createExecutionLog, readExecutionLog } from "./execu
 import { emptyState, loadState, saveState, type AppSettings } from "./storage";
 import { canReadPages, capturePageTarget, getActivePageCandidate, hasPageAccess, requestPageAccess, listOpenTabsTool, navigationTool, pageContextTool, switchTabTool, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
 import { domClickTool, domListTool, domReadTool, domWriteManyTool, domWriteTool, scrollAllTextTool } from "./dom-tools";
+import { capturePageSelection, promptWithSelections, watchPageSelection, type PageSelection } from "./page-selection";
 
 type Connection = "checking" | "connected" | "disconnected";
 type PendingAction = { title: string; detail: string; decide: (approved: boolean) => void };
@@ -29,6 +30,29 @@ function Icon({ name }: { name: "settings" | "back" | "plus" | "send" | "eye" })
 function Status({ connection }: { connection: Connection }) {
   const label = connection === "connected" ? "연결됨" : connection === "checking" ? "확인 중" : "연결 안 됨";
   return <span className={`connection connection--${connection}`} role="status"><span className="connection__dot" />{label}</span>;
+}
+
+function SelectionNote({ selection, number, onRemove }: { selection: PageSelection; number: number; onRemove?: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className={`selection-note ${expanded ? "selection-note--expanded" : ""}`}>
+      <button className="selection-note__trigger" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{`<주석 ${number}>`}</button>
+      {onRemove && <button className="selection-note__remove" type="button" aria-label={`주석 ${number} 제거`} onClick={onRemove}>×</button>}
+      <div className="selection-note__detail">
+        <div className="selection-note__source" title={selection.url}>{selection.title} · {selection.url}</div>
+        <div className="selection-note__selector">{selection.selector}</div>
+        <div className="selection-note__section">선택한 텍스트</div>
+        <pre>{selection.text}</pre>
+        <div className="selection-note__section">선택한 HTML{selection.truncated ? " · 길이 제한으로 일부만 첨부됨" : ""}</div>
+        <pre>{selection.html}</pre>
+      </div>
+    </div>
+  );
+}
+
+function SelectionNotes({ selections, onRemove }: { selections: PageSelection[]; onRemove?: (index: number) => void }) {
+  if (!selections.length) return null;
+  return <div className="selection-notes">{selections.map((selection, index) => <SelectionNote key={`${selection.url}:${selection.selector}:${index}`} selection={selection} number={index + 1} onRemove={onRemove ? () => onRemove(index) : undefined} />)}</div>;
 }
 
 interface SettingsViewProps {
@@ -183,6 +207,8 @@ export function App() {
   const [models, setModels] = useState<GatewayModel[]>([]);
   const [connection, setConnection] = useState<Connection>("disconnected");
   const [draft, setDraft] = useState("");
+  const [selectedRegions, setSelectedRegions] = useState<PageSelection[]>([]);
+  const [selectionLoading, setSelectionLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [pendingPrompt, setPendingPrompt] = useState("");
   const [streamed, setStreamed] = useState("");
@@ -279,6 +305,7 @@ export function App() {
       if (!active) return;
       if (!granted) { setPageTarget(null); return; }
       const target = await capturePageTarget(pageCandidate);
+      await watchPageSelection(target);
       if (active) { setPageTarget(target); setPageError(""); }
     }).catch(() => { if (active) setPageTarget(null); });
     return () => { active = false; };
@@ -313,11 +340,27 @@ export function App() {
     const stillCurrent = () => pageCandidateRef.current?.tabId === candidate.tabId && pageCandidateRef.current.url === candidate.url && !pageCandidateRef.current.loading;
     try {
       const target = await requestPageAccess(candidate);
+      await watchPageSelection(target);
       if (stillCurrent()) setPageTarget(target);
     } catch (cause) {
       if (!stillCurrent()) return;
       setPageTarget(null);
       setPageError(cause instanceof Error ? cause.message : "페이지에 연결하지 못했습니다.");
+    }
+  }
+
+  async function attachSelection() {
+    if (!pageTarget || selectionLoading || sending) return;
+    if (selectedRegions.length >= 5) { setError("선택 영역은 한 요청에 최대 5개까지 첨부할 수 있습니다."); return; }
+    setSelectionLoading(true);
+    setError("");
+    try {
+      const selection = await capturePageSelection(pageTarget);
+      setSelectedRegions((current) => [...current, selection]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "선택 영역을 읽지 못했습니다.");
+    } finally {
+      setSelectionLoading(false);
     }
   }
 
@@ -352,6 +395,7 @@ export function App() {
     if (providerSettingsChanged) {
       setMessages([]);
       setAgent(emptyAgentState());
+      setSelectedRegions([]);
     }
     setSettings(next);
     setModels(found);
@@ -364,6 +408,7 @@ export function App() {
     setSettings({ ...settings, model, apiMode: model.startsWith("codex/") ? "chat_completions" : settings.apiMode, contextWindowOverride: 0 });
     setMessages([]);
     setAgent(emptyAgentState());
+    setSelectedRegions([]);
     setError("");
   }
 
@@ -382,6 +427,7 @@ export function App() {
   async function send(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const content = draft.trim();
+    const selections = [...selectedRegions];
     const contextWindow = settings.contextWindowOverride || models.find((model) => model.id === settings.model)?.contextLength || 0;
     if (!content || sending || connection !== "connected" || !settings.model || !contextWindow) return;
     const controller = new AbortController();
@@ -397,7 +443,7 @@ export function App() {
     setSending(true);
     try {
       const result = await runTurn({
-        settings, contextWindow, state: agent, prompt: content, signal: controller.signal,
+        settings, contextWindow, state: agent, prompt: promptWithSelections(content, selections), signal: controller.signal,
         onTrace: executionLog.record,
         tools: pageTarget ? [
           withReadApproval(pageContextTool(pageTarget), pageTarget, settings.approvalPolicy, approveAction),
@@ -426,7 +472,8 @@ export function App() {
         },
       });
       setAgent(result.state);
-      setMessages([...messages, { role: "user", content }, { role: "assistant", content: result.content, cachedTokens: result.cachedTokens }]);
+      setMessages([...messages, { role: "user", content, selections }, { role: "assistant", content: result.content, cachedTokens: result.cachedTokens }]);
+      setSelectedRegions([]);
     } catch (cause) {
       setDraft(content);
       setError(controller.signal.aborted ? "요청을 취소했습니다." : cause instanceof Error ? cause.message : "응답을 받지 못했습니다.");
@@ -442,7 +489,7 @@ export function App() {
   }
 
   const contextWindow = settings.contextWindowOverride || models.find((model) => model.id === settings.model)?.contextLength || 0;
-  const canSend = connection === "connected" && !!settings.model && contextWindow > 0 && !sending;
+  const canSend = connection === "connected" && !!settings.model && contextWindow > 0 && !sending && !selectionLoading;
   const pageAccessAvailable = canReadPages();
 
   return (
@@ -467,7 +514,7 @@ export function App() {
                 {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
               </select>
             </div>
-            <button className="mp-button mp-button--ghost icon-button new-chat" type="button" aria-label="새 대화" title="새 대화" onClick={() => { setMessages([]); setAgent(emptyAgentState()); setError(""); }} disabled={sending || messages.length === 0}><Icon name="plus" /></button>
+            <button className="mp-button mp-button--ghost icon-button new-chat" type="button" aria-label="새 대화" title="새 대화" onClick={() => { setMessages([]); setAgent(emptyAgentState()); setSelectedRegions([]); setError(""); }} disabled={sending || messages.length === 0}><Icon name="plus" /></button>
           </div>
 
           <div className="page-bar">
@@ -493,10 +540,11 @@ export function App() {
                 <article className={`message message--${message.role}`} key={index}>
                   <div className="message__label">{message.role === "user" ? "사용자" : "Qumi"}</div>
                   <p className="message__content">{message.content}</p>
+                  {message.selections && <SelectionNotes selections={message.selections} />}
                   {typeof message.cachedTokens === "number" && message.cachedTokens > 0 && <p className="message__meta">캐시 사용 {message.cachedTokens.toLocaleString()} 토큰</p>}
                 </article>
               ))}
-              {pendingPrompt && <article className="message message--user"><div className="message__label">사용자</div><p className="message__content">{pendingPrompt}</p></article>}
+              {pendingPrompt && <article className="message message--user"><div className="message__label">사용자</div><p className="message__content">{pendingPrompt}</p><SelectionNotes selections={selectedRegions} /></article>}
               {sending && <div className="pending-message" role="status"><span className="mp-spinner" aria-hidden="true" />{progress}</div>}
               {sending && thinking && !streamed && <div className="thinking-preview" aria-label="모델 생각"><div className="thinking-preview__label">생각 중</div><p className="thinking-preview__content" ref={thinkingContent}>{thinking}</p></div>}
               {streamed && <article className="message message--assistant"><div className="message__label">Qumi</div><p className="message__content">{streamed}</p></article>}
@@ -512,6 +560,8 @@ export function App() {
             </div>}
             {error && <div className="composer__error" role="alert">{error}</div>}
             {connection === "connected" && !contextWindow && <div className="composer__error" role="status">설정에서 이 모델의 문맥 길이를 입력해 주세요.</div>}
+            {pageTarget && <div className="composer__selection-actions"><button className="mp-button mp-button--secondary" type="button" onClick={() => void attachSelection()} disabled={sending || selectionLoading || selectedRegions.length >= 5}>{selectionLoading ? "읽는 중…" : "+ 선택 영역 추가"}</button><span>페이지에서 텍스트를 드래그한 뒤 추가</span></div>}
+            {!sending && <SelectionNotes selections={selectedRegions} onRemove={(index) => setSelectedRegions((current) => current.filter((_, itemIndex) => itemIndex !== index))} />}
             <label className="sr-only" htmlFor="chat-input">Q에게 물어보기</label>
             <textarea id="chat-input" className="mp-textarea" rows={3} placeholder="Q에게 물어보기" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} disabled={!canSend} />
             <div className="composer__footer"><span>Q Gateway · 로컬 연결</span>{sending ? <button className="mp-button mp-button--secondary" type="button" onClick={() => requestController.current?.abort()}>중단</button> : <button className="mp-button mp-button--primary" type="submit" disabled={!canSend || !draft.trim()}><Icon name="send" />보내기</button>}</div>

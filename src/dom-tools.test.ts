@@ -1,6 +1,6 @@
 import { it } from "node:test";
 import assert from "node:assert/strict";
-import { inspectDom, scrollAllTextTool } from "./dom-tools.ts";
+import { domReadTool, domWriteTool, inspectDom, scrollAllTextTool } from "./dom-tools.ts";
 
 it("builds unique CSS paths and applies reviewed writes and clicks", async () => {
   class FakeText {
@@ -58,6 +58,8 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
   const buttonSelector = "body > main:nth-of-type(1) > button:nth-of-type(1)";
   const paragraphSelector = "body > main:nth-of-type(1) > p:nth-of-type(1)";
   const inputSelector = "body > main:nth-of-type(1) > input:nth-of-type(1)";
+  const longInputSelector = `body > main:nth-of-type(1)${":not(.unused-class)".repeat(30)} > input:nth-of-type(1)`;
+  assert.ok(longInputSelector.length > 500);
   const globals: Record<string, unknown> = {
     location: { href: "https://example.com/" },
     document: {
@@ -69,6 +71,7 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
         [buttonSelector]: [first],
         [paragraphSelector]: [paragraph],
         [inputSelector]: [input],
+        [longInputSelector]: [input],
         button: main.children.filter((child) => child.tagName === "BUTTON"),
       })[selector] || [],
     },
@@ -129,6 +132,11 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
     assert.equal(inspectDom({ action: "write", selector: inputSelector, value: "Hello", fingerprint: beforeWrite }).result?.written, true);
     assert.equal(input.value, "Hello");
     assert.match(inspectDom({ action: "write", selector: inputSelector, value: "Again", fingerprint: beforeWrite }).error || "", /바뀌었습니다/);
+    const target = { tabId: 1, windowId: 1, url: "https://example.com/", title: "Example" };
+    const signal = new AbortController().signal;
+    assert.equal(JSON.parse(await domReadTool(target).execute({ selector: longInputSelector }, signal)).value, "Hello");
+    assert.equal(JSON.parse(await domWriteTool(target, async () => true).execute({ selector: longInputSelector, value: "Long selector" }, signal)).written, true);
+    assert.equal(input.value, "Long selector");
     const beforeAttribute = inspectDom({ action: "readAttribute", selector: buttonSelector, attribute: "aria-label" }).result;
     assert.equal(beforeAttribute?.value, null);
     assert.equal(inspectDom({ action: "writeAttribute", selector: buttonSelector, attribute: "aria-label", value: "Continue", expectedAttributeValue: null, fingerprint: String(beforeAttribute?.fingerprint) }).result?.written, true);

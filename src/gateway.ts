@@ -1,3 +1,5 @@
+import type { PageSelection } from "./page-selection.ts";
+
 export interface GatewaySettings {
   baseUrl: string;
   apiKey: string;
@@ -49,6 +51,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   cachedTokens?: number;
+  selections?: PageSelection[];
 }
 
 export interface ChatResult {

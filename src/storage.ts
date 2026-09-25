@@ -24,6 +24,13 @@ function storedMessages(value: unknown): ChatMessage[] {
   return Array.isArray(value)
     ? value.filter((message): message is ChatMessage =>
       (message?.role === "user" || message?.role === "assistant") && typeof message?.content === "string")
+      .map((message) => ({
+        ...message,
+        selections: Array.isArray(message.selections) ? message.selections.filter((selection) =>
+          selection && typeof selection.url === "string" && typeof selection.title === "string"
+          && typeof selection.selector === "string" && typeof selection.text === "string"
+          && typeof selection.html === "string" && typeof selection.truncated === "boolean") : undefined,
+      }))
     : [];
 }
 

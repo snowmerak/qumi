@@ -115,7 +115,7 @@ export function inspectDom(command: DomCommand): DomReply {
   }
 
   function uniqueElement(selector: string): Element {
-    if (!selector || selector.length > 500) throw new Error("CSS 선택자가 올바르지 않습니다.");
+    if (!selector.trim()) throw new Error("CSS 선택자가 올바르지 않습니다.");
     const matches = Array.from(document.querySelectorAll(selector)).filter((element) => (element === document.body || document.body.contains(element)) && isVisible(element));
     if (matches.length !== 1) throw new Error(`CSS 선택자가 보이는 요소 ${matches.length}개와 일치합니다. 한 요소만 가리키도록 좁혀 주세요.`);
     return matches[0];
@@ -336,7 +336,7 @@ function parseArgs(value: unknown, allowed: string[], required: string[] = []): 
 }
 
 function parseSelector(value: unknown): string {
-  if (typeof value !== "string" || !value.trim() || value.length > 500) throw new Error("CSS 선택자가 올바르지 않습니다.");
+  if (typeof value !== "string" || !value.trim()) throw new Error("CSS 선택자가 올바르지 않습니다.");
   return value;
 }
 
