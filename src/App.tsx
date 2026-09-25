@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactElement } from "react";
 import {
-  completeChat,
-  listModels,
+  listModelDetails,
   normalizeGatewayUrl,
   type ChatMessage,
+  type GatewayModel,
   type GatewaySettings,
 } from "./gateway";
+import { emptyAgentState, runTurn, type AgentState } from "./agent";
 import { emptyState, loadState, saveState } from "./storage";
 
 type Connection = "checking" | "connected" | "disconnected";
@@ -28,26 +29,45 @@ function Status({ connection }: { connection: Connection }) {
 
 interface SettingsViewProps {
   settings: GatewaySettings;
+  availableModels: GatewayModel[];
   onClose: () => void;
-  onSave: (settings: GatewaySettings, models: string[]) => void;
+  onSave: (settings: GatewaySettings, models: GatewayModel[]) => void;
 }
 
-function SettingsView({ settings, onClose, onSave }: SettingsViewProps) {
+function SettingsView({ settings, availableModels, onClose, onSave }: SettingsViewProps) {
   const [draft, setDraft] = useState(settings);
-  const [models, setModels] = useState<string[]>(settings.model ? [settings.model] : []);
+  const [checkedModels, setCheckedModels] = useState<GatewayModel[] | null>(null);
   const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
   const [showKey, setShowKey] = useState(false);
+  const sameGateway = draft.baseUrl === settings.baseUrl && draft.apiKey === settings.apiKey;
+  const models = checkedModels ?? (sameGateway ? availableModels : []);
 
-  async function checkConnection(): Promise<string[] | null> {
+  function changeGateway(field: "baseUrl" | "apiKey", value: string) {
+    setDraft({ ...draft, [field]: value, model: "" });
+    setCheckedModels(null);
+    setMessage("");
+  }
+
+  const selectedModel = models.find((model) => model.id === draft.model);
+
+  async function checkConnection(): Promise<GatewayModel[] | null> {
     setTesting(true);
     setMessage("");
     try {
-      const found = await listModels(draft);
+      const found = await listModelDetails(draft);
       if (found.length === 0) throw new Error("사용 가능한 모델이 없습니다. Q의 제공자 설정을 확인해 주세요.");
-      setModels(found);
-      setDraft((current) => ({ ...current, baseUrl: normalizeGatewayUrl(current.baseUrl), model: found.includes(current.model) ? current.model : found[0] }));
+      setCheckedModels(found);
+      setDraft((current) => {
+        const existing = found.some((model) => model.id === current.model);
+        return {
+          ...current,
+          baseUrl: normalizeGatewayUrl(current.baseUrl),
+          model: existing ? current.model : found[0].id,
+          contextWindowOverride: existing ? current.contextWindowOverride : 0,
+        };
+      });
       setIsError(false);
       setMessage(`${found.length}개 모델을 확인했습니다.`);
       return found;
@@ -64,7 +84,14 @@ function SettingsView({ settings, onClose, onSave }: SettingsViewProps) {
     event.preventDefault();
     const found = await checkConnection();
     if (!found) return;
-    onSave({ ...draft, baseUrl: normalizeGatewayUrl(draft.baseUrl), model: found.includes(draft.model) ? draft.model : found[0] }, found);
+    const model = found.find((entry) => entry.id === draft.model) ?? found[0];
+    const contextWindowOverride = model.id === draft.model ? draft.contextWindowOverride : 0;
+    if (!model.contextLength && !contextWindowOverride) {
+      setIsError(true);
+      setMessage("이 모델은 문맥 길이를 제공하지 않습니다. 문맥 길이를 입력해 주세요.");
+      return;
+    }
+    onSave({ ...draft, baseUrl: normalizeGatewayUrl(draft.baseUrl), model: model.id, contextWindowOverride }, found);
   }
 
   return (
@@ -77,24 +104,29 @@ function SettingsView({ settings, onClose, onSave }: SettingsViewProps) {
       <form className="settings-form" onSubmit={submit}>
         <div className="mp-field">
           <label className="mp-field__label" htmlFor="gateway-url">Gateway URL</label>
-          <input id="gateway-url" className="mp-input" type="url" required placeholder="http://127.0.0.1:8080/v1" value={draft.baseUrl} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} aria-describedby="gateway-url-hint" />
+          <input id="gateway-url" className="mp-input" type="url" required placeholder="http://127.0.0.1:8080/v1" value={draft.baseUrl} onChange={(event) => changeGateway("baseUrl", event.target.value)} aria-describedby="gateway-url-hint" />
           <p id="gateway-url-hint" className="mp-field__hint">현재는 로컬 Q Gateway에 연결합니다.</p>
         </div>
         <div className="mp-field">
           <label className="mp-field__label" htmlFor="gateway-key">API 키 (선택)</label>
           <div className="password-field">
-            <input id="gateway-key" className="mp-input" type={showKey ? "text" : "password"} value={draft.apiKey} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} autoComplete="off" aria-describedby="gateway-key-hint" />
+            <input id="gateway-key" className="mp-input" type={showKey ? "text" : "password"} value={draft.apiKey} onChange={(event) => changeGateway("apiKey", event.target.value)} autoComplete="off" aria-describedby="gateway-key-hint" />
             <button type="button" className="password-field__toggle" aria-label={showKey ? "API 키 숨기기" : "API 키 보기"} onClick={() => setShowKey(!showKey)}><Icon name="eye" /></button>
           </div>
           <p id="gateway-key-hint" className="mp-field__hint">Q Gateway에 인증 키를 설정한 경우에만 입력하세요.</p>
         </div>
         <div className="mp-field">
           <label className="mp-field__label" htmlFor="settings-model">모델</label>
-          <select id="settings-model" className="mp-select" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} disabled={models.length === 0}>
+          <select id="settings-model" className="mp-select" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value, contextWindowOverride: 0 })} disabled={models.length === 0}>
             {models.length === 0 && <option value="">연결 확인 후 선택</option>}
-            {models.map((model) => <option key={model} value={model}>{model}</option>)}
+            {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
           </select>
           <p className="mp-field__hint">Gateway가 제공하는 모델 목록에서 선택합니다.</p>
+        </div>
+        <div className="mp-field">
+          <label className="mp-field__label" htmlFor="context-window">문맥 길이 (토큰)</label>
+          <input id="context-window" className="mp-input" type="number" min="1024" step="1" placeholder={selectedModel?.contextLength ? String(selectedModel.contextLength) : "모델이 제공하지 않으면 입력"} value={draft.contextWindowOverride || ""} onChange={(event) => setDraft({ ...draft, contextWindowOverride: event.target.value ? Number(event.target.value) : 0 })} />
+          <p className="mp-field__hint">{selectedModel?.contextLength ? `Gateway 제공값 ${selectedModel.contextLength.toLocaleString()} · 입력하면 우선 적용됩니다.` : "Gateway 제공값이 없으면 직접 입력해야 압축할 수 있습니다."}</p>
         </div>
         <button className="mp-button mp-button--secondary" type="button" onClick={() => void checkConnection()} disabled={testing}>{testing ? "확인 중…" : "연결 확인"}</button>
         {message && <div className={`inline-notice ${isError ? "inline-notice--error" : "inline-notice--success"}`} role={isError ? "alert" : "status"}>{message}</div>}
@@ -109,13 +141,17 @@ export function App() {
   const [view, setView] = useState<"chat" | "settings">("chat");
   const [settings, setSettings] = useState<GatewaySettings>(emptyState.settings);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [conversationId, setConversationId] = useState("");
-  const [models, setModels] = useState<string[]>([]);
+  const [agent, setAgent] = useState<AgentState>(emptyAgentState);
+  const [models, setModels] = useState<GatewayModel[]>([]);
   const [connection, setConnection] = useState<Connection>("disconnected");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [pendingPrompt, setPendingPrompt] = useState("");
+  const [streamed, setStreamed] = useState("");
+  const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
   const messagesEnd = useRef<HTMLDivElement>(null);
+  const requestController = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -123,11 +159,11 @@ export function App() {
       if (!active) return;
       setSettings(saved.settings);
       setMessages(saved.messages);
-      setConversationId(saved.conversationId);
+      setAgent(saved.agent);
       setReady(true);
       if (!saved.settings.baseUrl) return;
       setConnection("checking");
-      void listModels(saved.settings).then((found) => {
+      void listModelDetails(saved.settings).then((found) => {
         if (!active) return;
         if (found.length === 0) {
           setConnection("disconnected");
@@ -135,10 +171,10 @@ export function App() {
         }
         setModels(found);
         setConnection("connected");
-        if (!found.includes(saved.settings.model)) {
-          setSettings({ ...saved.settings, model: found[0] });
+        if (!found.some((model) => model.id === saved.settings.model)) {
+          setSettings({ ...saved.settings, model: found[0].id, contextWindowOverride: 0 });
           setMessages([]);
-          setConversationId("");
+          setAgent(emptyAgentState());
         }
       }).catch(() => { if (active) setConnection("disconnected"); });
     }).catch(() => { if (active) { setReady(true); setError("저장된 설정을 읽지 못했습니다."); } });
@@ -146,15 +182,15 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (ready) void saveState({ settings, messages, conversationId }).catch(() => setError("대화 내용을 저장하지 못했습니다."));
-  }, [ready, settings, messages, conversationId]);
+    if (ready) void saveState({ settings, messages, agent }).catch(() => setError("대화 내용을 저장하지 못했습니다."));
+  }, [ready, settings, messages, agent]);
 
-  useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, sending]);
+  useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, streamed, sending]);
 
-  function saveSettings(next: GatewaySettings, found: string[]) {
-    if (next.baseUrl !== settings.baseUrl || next.apiKey !== settings.apiKey || next.model !== settings.model) {
+  function saveSettings(next: GatewaySettings, found: GatewayModel[]) {
+    if (next.baseUrl !== settings.baseUrl || next.apiKey !== settings.apiKey || next.model !== settings.model || next.contextWindowOverride !== settings.contextWindowOverride) {
       setMessages([]);
-      setConversationId("");
+      setAgent(emptyAgentState());
     }
     setSettings(next);
     setModels(found);
@@ -164,35 +200,50 @@ export function App() {
   }
 
   function changeModel(model: string) {
-    setSettings({ ...settings, model });
+    setSettings({ ...settings, model, contextWindowOverride: 0 });
     setMessages([]);
-    setConversationId("");
+    setAgent(emptyAgentState());
     setError("");
   }
 
   async function send(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const content = draft.trim();
-    if (!content || sending || connection !== "connected" || !settings.model) return;
-    const nextMessages: ChatMessage[] = [...messages, { role: "user", content }];
-    setMessages(nextMessages);
+    const contextWindow = settings.contextWindowOverride || models.find((model) => model.id === settings.model)?.contextLength || 0;
+    if (!content || sending || connection !== "connected" || !settings.model || !contextWindow) return;
+    const controller = new AbortController();
+    requestController.current = controller;
+    setPendingPrompt(content);
     setDraft("");
+    setStreamed("");
+    setProgress("응답 중…");
     setError("");
     setSending(true);
     try {
-      const result = await completeChat(settings, nextMessages, conversationId);
-      setMessages([...nextMessages, result.message]);
-      setConversationId(result.conversationId);
+      const result = await runTurn({
+        settings, contextWindow, state: agent, prompt: content, signal: controller.signal,
+        onEvent: (event) => {
+          if (event.type === "delta") setStreamed((current) => current + event.text);
+          if (event.type === "compacting") { setProgress("문맥 압축 중…"); setStreamed(""); }
+          if (event.type === "tool") { setProgress(`${event.name} 실행 중…`); setStreamed(""); }
+        },
+      });
+      setAgent(result.state);
+      setMessages([...messages, { role: "user", content }, { role: "assistant", content: result.content, cachedTokens: result.cachedTokens }]);
     } catch (cause) {
-      setMessages(messages);
       setDraft(content);
-      setError(cause instanceof Error ? cause.message : "응답을 받지 못했습니다.");
+      setError(controller.signal.aborted ? "요청을 취소했습니다." : cause instanceof Error ? cause.message : "응답을 받지 못했습니다.");
     } finally {
+      requestController.current = null;
+      setPendingPrompt("");
+      setStreamed("");
+      setProgress("");
       setSending(false);
     }
   }
 
-  const canSend = connection === "connected" && !!settings.model && !sending;
+  const contextWindow = settings.contextWindowOverride || models.find((model) => model.id === settings.model)?.contextLength || 0;
+  const canSend = connection === "connected" && !!settings.model && contextWindow > 0 && !sending;
 
   return (
     <div className="app-shell">
@@ -205,7 +256,7 @@ export function App() {
       </header>
 
       {view === "settings" ? (
-        <SettingsView settings={settings} onClose={() => setView("chat")} onSave={saveSettings} />
+        <SettingsView settings={settings} availableModels={models} onClose={() => setView("chat")} onSave={saveSettings} />
       ) : (
         <>
           <div className="model-bar">
@@ -213,10 +264,10 @@ export function App() {
               <label className="mp-field__label" htmlFor="active-model">모델</label>
               <select id="active-model" className="mp-select" value={settings.model} onChange={(event) => changeModel(event.target.value)} disabled={models.length === 0 || sending}>
                 {models.length === 0 && <option value="">모델 없음</option>}
-                {models.map((model) => <option key={model} value={model}>{model}</option>)}
+                {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
               </select>
             </div>
-            <button className="mp-button mp-button--ghost icon-button new-chat" type="button" aria-label="새 대화" title="새 대화" onClick={() => { setMessages([]); setConversationId(""); setError(""); }} disabled={sending || messages.length === 0}><Icon name="plus" /></button>
+            <button className="mp-button mp-button--ghost icon-button new-chat" type="button" aria-label="새 대화" title="새 대화" onClick={() => { setMessages([]); setAgent(emptyAgentState()); setError(""); }} disabled={sending || messages.length === 0}><Icon name="plus" /></button>
           </div>
 
           <main className="chat-history" aria-label="대화 내용">
@@ -232,19 +283,22 @@ export function App() {
                 <article className={`message message--${message.role}`} key={index}>
                   <div className="message__label">{message.role === "user" ? "사용자" : "Qumi"}</div>
                   <p className="message__content">{message.content}</p>
-                  {typeof message.cachedTokens === "number" && <p className="message__meta">캐시 사용 {message.cachedTokens.toLocaleString()} 토큰</p>}
+                  {typeof message.cachedTokens === "number" && message.cachedTokens > 0 && <p className="message__meta">캐시 사용 {message.cachedTokens.toLocaleString()} 토큰</p>}
                 </article>
               ))}
-              {sending && <div className="pending-message" role="status"><span className="mp-spinner" aria-hidden="true" />Q가 응답하는 중…</div>}
+              {pendingPrompt && <article className="message message--user"><div className="message__label">사용자</div><p className="message__content">{pendingPrompt}</p></article>}
+              {sending && <div className="pending-message" role="status"><span className="mp-spinner" aria-hidden="true" />{progress}</div>}
+              {streamed && <article className="message message--assistant"><div className="message__label">Qumi</div><p className="message__content">{streamed}</p></article>}
               <div ref={messagesEnd} />
             </div>
           </main>
 
           <form className="composer" onSubmit={(event) => void send(event)}>
             {error && <div className="composer__error" role="alert">{error}</div>}
+            {connection === "connected" && !contextWindow && <div className="composer__error" role="status">설정에서 이 모델의 문맥 길이를 입력해 주세요.</div>}
             <label className="sr-only" htmlFor="chat-input">Q에게 물어보기</label>
             <textarea id="chat-input" className="mp-textarea" rows={3} placeholder="Q에게 물어보기" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} disabled={!canSend} />
-            <div className="composer__footer"><span>Q Gateway · 로컬 연결</span><button className="mp-button mp-button--primary" type="submit" disabled={!canSend || !draft.trim()}><Icon name="send" />보내기</button></div>
+            <div className="composer__footer"><span>Q Gateway · 로컬 연결</span>{sending ? <button className="mp-button mp-button--secondary" type="button" onClick={() => requestController.current?.abort()}>중단</button> : <button className="mp-button mp-button--primary" type="submit" disabled={!canSend || !draft.trim()}><Icon name="send" />보내기</button>}</div>
           </form>
         </>
       )}

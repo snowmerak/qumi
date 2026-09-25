@@ -2,6 +2,38 @@ export interface GatewaySettings {
   baseUrl: string;
   apiKey: string;
   model: string;
+  contextWindowOverride?: number;
+}
+
+export interface GatewayModel {
+  id: string;
+  contextLength: number;
+}
+
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+export interface ModelMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  name?: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+}
+
+export interface ToolDefinition {
+  type: "function";
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+}
+
+export interface ModelReply {
+  message: ModelMessage & { role: "assistant" };
+  conversationId: string;
+  promptTokens: number;
+  cachedTokens: number;
 }
 
 export interface ChatMessage {
@@ -60,17 +92,166 @@ async function readJson(response: Response): Promise<unknown> {
   return body;
 }
 
-export async function listModels(settings: GatewaySettings): Promise<string[]> {
+export async function listModelDetails(settings: GatewaySettings): Promise<GatewayModel[]> {
   const baseUrl = normalizeGatewayUrl(settings.baseUrl);
   const response = await fetch(`${baseUrl}/models`, {
     headers: headers(settings),
     signal: AbortSignal.timeout(10_000),
   });
-  const body = (await readJson(response)) as { data?: Array<{ id?: unknown }> };
+  const body = (await readJson(response)) as { data?: Array<{ id?: unknown; context_length?: unknown }> };
   if (!Array.isArray(body.data)) {
     throw new Error("Gateway 모델 목록 형식이 올바르지 않습니다.");
   }
-  return body.data.map((entry) => entry.id).filter((id): id is string => typeof id === "string");
+  return body.data.filter((entry): entry is { id: string; context_length?: unknown } => typeof entry.id === "string")
+    .map((entry) => ({
+      id: entry.id,
+      contextLength: typeof entry.context_length === "number" && Number.isSafeInteger(entry.context_length) && entry.context_length > 0
+        ? entry.context_length : 0,
+    }));
+}
+
+export async function listModels(settings: GatewaySettings): Promise<string[]> {
+  return (await listModelDetails(settings)).map((model) => model.id);
+}
+
+function parseModelReply(body: unknown, previousConversationId: string): ModelReply {
+  const value = body as {
+    choices?: Array<{ message?: { content?: unknown; tool_calls?: unknown } }>;
+    conversation_id?: unknown;
+    usage?: { prompt_tokens?: unknown; prompt_tokens_details?: { cached_tokens?: unknown } };
+  };
+  const raw = value?.choices?.[0]?.message;
+  const content = typeof raw?.content === "string" ? raw.content : "";
+  const toolCalls = Array.isArray(raw?.tool_calls) ? raw.tool_calls.map(parseToolCall) : [];
+  if (!content && toolCalls.length === 0) throw new Error("Gateway가 빈 응답을 반환했습니다.");
+  return {
+    message: { role: "assistant", content, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) },
+    conversationId: typeof value?.conversation_id === "string" ? value.conversation_id : previousConversationId,
+    promptTokens: typeof value?.usage?.prompt_tokens === "number" ? value.usage.prompt_tokens : 0,
+    cachedTokens: typeof value?.usage?.prompt_tokens_details?.cached_tokens === "number" ? value.usage.prompt_tokens_details.cached_tokens : 0,
+  };
+}
+
+function parseToolCall(value: unknown): ToolCall {
+  const call = value as { id?: unknown; function?: { name?: unknown; arguments?: unknown } };
+  if (typeof call?.id !== "string" || !call.id || typeof call.function?.name !== "string" || !call.function.name || typeof call.function.arguments !== "string") {
+    throw new Error("Gateway 도구 호출 형식이 올바르지 않습니다.");
+  }
+  return { id: call.id, type: "function", function: { name: call.function.name, arguments: call.function.arguments } };
+}
+
+async function readStreamedReply(response: Response, previousConversationId: string, onDelta: (text: string) => void): Promise<ModelReply> {
+  if (!response.body) throw new Error("Gateway 스트림을 읽을 수 없습니다.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventData: string[] = [];
+  let content = "";
+  let conversationId = previousConversationId;
+  let promptTokens = 0;
+  let cachedTokens = 0;
+  const calls = new Map<number, ToolCall>();
+
+  function consumeEvent() {
+    if (eventData.length === 0) return;
+    const data = eventData.join("\n");
+    eventData = [];
+    if (data === "[DONE]") return;
+    const chunk = JSON.parse(data) as {
+      error?: { message?: string };
+      conversation_id?: string;
+      usage?: { prompt_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
+      choices?: Array<{ delta?: { content?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> } }>;
+    };
+    if (chunk.error) throw new Error(chunk.error.message || "Gateway 스트림이 실패했습니다.");
+    if (chunk.conversation_id) conversationId = chunk.conversation_id;
+    if (typeof chunk.usage?.prompt_tokens === "number") promptTokens = chunk.usage.prompt_tokens;
+    if (typeof chunk.usage?.prompt_tokens_details?.cached_tokens === "number") cachedTokens = chunk.usage.prompt_tokens_details.cached_tokens;
+    for (const choice of chunk.choices ?? []) {
+      const delta = choice.delta;
+      if (typeof delta?.content === "string") {
+        content += delta.content;
+        onDelta(delta.content);
+      }
+      for (const fragment of delta?.tool_calls ?? []) {
+        const index = fragment.index ?? 0;
+        const call = calls.get(index) ?? { id: "", type: "function" as const, function: { name: "", arguments: "" } };
+        if (fragment.id) call.id = fragment.id;
+        if (fragment.function?.name) call.function.name += fragment.function.name;
+        if (fragment.function?.arguments) call.function.arguments += fragment.function.arguments;
+        calls.set(index, call);
+      }
+    }
+  }
+
+  function consumeLines(final = false) {
+    let newline: number;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline).replace(/\r$/, "");
+      buffer = buffer.slice(newline + 1);
+      if (line === "") consumeEvent();
+      else if (line.startsWith("data:")) eventData.push(line.slice(5).trimStart());
+    }
+    if (final) {
+      if (buffer.startsWith("data:")) eventData.push(buffer.slice(5).trimStart());
+      consumeEvent();
+    }
+  }
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      consumeLines();
+    }
+    buffer += decoder.decode();
+    consumeLines(true);
+  } finally {
+    reader.releaseLock();
+  }
+  const toolCalls = [...calls.entries()].sort(([left], [right]) => left - right).map(([, call]) => parseToolCall(call));
+  if (!content && toolCalls.length === 0) throw new Error("Gateway가 빈 응답을 반환했습니다.");
+  return { message: { role: "assistant", content, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) }, conversationId, promptTokens, cachedTokens };
+}
+
+export async function requestModel(
+  settings: GatewaySettings,
+  messages: ModelMessage[],
+  tools: ToolDefinition[],
+  conversationId: string,
+  signal: AbortSignal,
+  onDelta?: (text: string) => void,
+): Promise<ModelReply> {
+  const baseUrl = normalizeGatewayUrl(settings.baseUrl);
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: headers(settings),
+    body: JSON.stringify({
+      model: settings.model,
+      messages,
+      ...(tools.length ? { tools, tool_choice: "auto" } : {}),
+      ...(conversationId ? { conversation_id: conversationId } : {}),
+      stream: !!onDelta,
+      ...(onDelta ? { stream_options: { include_usage: true } } : {}),
+    }),
+    signal,
+  });
+  if (!response.ok) {
+    try {
+      await readJson(response);
+    } catch (error) {
+      if (onDelta && [400, 422].includes(response.status) && error instanceof Error && /\bstream(?:_options|ing)?\b/i.test(error.message)) {
+        return requestModel(settings, messages, tools, conversationId, signal);
+      }
+      throw error;
+    }
+    throw new Error(`Gateway 요청에 실패했습니다. (${response.status})`);
+  }
+  if (onDelta && response.headers.get("Content-Type")?.includes("text/event-stream")) {
+    return readStreamedReply(response, conversationId, onDelta);
+  }
+  return parseModelReply(await readJson(response), conversationId);
 }
 
 export async function completeChat(
