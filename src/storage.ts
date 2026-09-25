@@ -61,6 +61,10 @@ export async function loadState(): Promise<SavedState> {
       conversationId: typeof agent.conversationId === "string" ? agent.conversationId
         : typeof saved.conversationId === "string" ? saved.conversationId : "",
       providerOverhead: typeof agent.providerOverhead === "number" && agent.providerOverhead >= 0 ? agent.providerOverhead : 0,
+      activeTask: agent.activeTask && typeof agent.activeTask.objective === "string" && agent.activeTask.objective.trim()
+        ? { objective: agent.activeTask.objective, completionCriteria: Array.isArray(agent.activeTask.completionCriteria)
+          ? agent.activeTask.completionCriteria.filter((item): item is string => typeof item === "string") : [] }
+        : null,
     },
   };
 }

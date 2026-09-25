@@ -239,6 +239,7 @@ async function requestModelOnce(
   signal: AbortSignal,
   onDelta?: (delta: StreamDelta) => void,
   onChunk?: () => void,
+  toolChoice: "auto" | "none" = "auto",
 ): Promise<ModelReply> {
   const baseUrl = normalizeGatewayUrl(settings.baseUrl);
   const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -247,7 +248,7 @@ async function requestModelOnce(
     body: JSON.stringify({
       model: settings.model,
       messages,
-      ...(tools.length ? { tools, tool_choice: "auto" } : {}),
+      ...(tools.length ? { tools, tool_choice: toolChoice, ...(toolChoice === "none" ? { parallel_tool_calls: false } : {}) } : {}),
       ...(conversationId ? { conversation_id: conversationId } : {}),
       stream: !!onDelta,
       ...(onDelta ? { stream_options: { include_usage: true } } : {}),
@@ -259,7 +260,7 @@ async function requestModelOnce(
       await readJson(response);
     } catch (error) {
       if (onDelta && [400, 422].includes(response.status) && error instanceof Error && /\bstream(?:_options|ing)?\b/i.test(error.message)) {
-        return requestModelOnce(settings, messages, tools, conversationId, signal);
+        return requestModelOnce(settings, messages, tools, conversationId, signal, undefined, undefined, toolChoice);
       }
       throw error;
     }
@@ -278,14 +279,15 @@ export async function requestModel(
   conversationId: string,
   signal: AbortSignal,
   onDelta?: (delta: StreamDelta) => void,
+  toolChoice: "auto" | "none" = "auto",
 ): Promise<ModelReply> {
   let receivedChunk = false;
   try {
-    return await requestModelOnce(settings, messages, tools, conversationId, signal, onDelta, () => { receivedChunk = true; });
+    return await requestModelOnce(settings, messages, tools, conversationId, signal, onDelta, () => { receivedChunk = true; }, toolChoice);
   } catch (error) {
     if (!conversationId || receivedChunk || signal.aborted || !isMissingCodexRollout(error)) throw error;
     // The full message history is already supplied, so a fresh provider thread can rebuild it.
-    return requestModelOnce(settings, messages, tools, "", signal, onDelta);
+    return requestModelOnce(settings, messages, tools, "", signal, onDelta, undefined, toolChoice);
   }
 }
 

@@ -11,7 +11,7 @@ export interface ExecutionLogRecord extends AgentTraceEvent {
 }
 
 const storageKey = "qumiExecutionLog";
-const maxEvents = 2_000;
+const maxEvents = 10_000;
 const retentionMs = 7 * 24 * 60 * 60_000;
 let pendingWrite = Promise.resolve();
 

@@ -25,9 +25,11 @@ it("persists bounded execution events separately from conversation content", asy
     assert.equal(JSON.stringify(events).includes("API key"), false);
 
     const longRun = createExecutionLog("codex/test", false, "none");
-    for (let index = 0; index < 2_005; index++) longRun.record({ event: "model_requested", round: index + 1 });
+    for (let index = 0; index < 10_005; index++) longRun.record({ event: "model_requested", round: index + 1 });
     await longRun.finish();
-    assert.equal((await readExecutionLog()).length, 2_000);
+    const retained = await readExecutionLog();
+    assert.equal(retained.length, 10_000);
+    assert.equal(retained[0].sequence, 6);
     await clearExecutionLog();
     assert.deepEqual(await readExecutionLog(), []);
   } finally {

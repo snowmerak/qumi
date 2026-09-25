@@ -150,7 +150,7 @@ function SettingsView({ settings, availableModels, onClose, onSave, onExportLog,
         </div>
         <div className="mp-field">
           <span className="mp-field__label">실행 진단 로그</span>
-          <p className="mp-field__hint">최근 7일, 최대 2,000개 이벤트를 이 브라우저에 저장합니다. 프롬프트·페이지 내용·API 키는 기록하지 않습니다.</p>
+          <p className="mp-field__hint">최근 7일, 최대 10,000개 이벤트를 이 브라우저에 저장합니다. 프롬프트·페이지 내용·API 키는 기록하지 않습니다.</p>
           <div className="execution-log-actions">
             <button className="mp-button mp-button--secondary" type="button" onClick={() => void onExportLog().then((count) => setLogMessage(`${count}개 이벤트를 다운로드했습니다.`)).catch(() => setLogMessage("로그를 다운로드하지 못했습니다."))}>JSON 다운로드</button>
             <button className="mp-button mp-button--ghost" type="button" onClick={() => void onClearLog().then(() => setLogMessage("저장된 실행 로그를 지웠습니다.")).catch(() => setLogMessage("로그를 지우지 못했습니다."))}>로그 지우기</button>

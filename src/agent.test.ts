@@ -16,6 +16,101 @@ function response(message: Record<string, unknown>, conversationId = ""): Respon
 }
 
 describe("Qumi agent loop", () => {
+  it("requires task_complete after task_start and returns its structured result", async () => {
+    const requests: Array<{ messages: ModelMessage[]; tools?: Array<{ function: { name: string } }>; tool_choice?: string; conversation_id?: string }> = [];
+    const trace: AgentTraceEvent[] = [];
+    const replies = [
+      response({ role: "assistant", content: "", tool_calls: [{ id: "start", type: "function", function: { name: "task_start", arguments: '{"objective":"Translate the article","completion_criteria":["All paragraphs translated"]}' } }] }, "cache_1"),
+      response({ role: "assistant", content: "", tool_calls: [{ id: "read", type: "function", function: { name: "lookup", arguments: "{}" } }] }, "cache_2"),
+      response({ role: "assistant", content: "Done already." }, "cache_3"),
+      response({ role: "assistant", content: "", tool_calls: [{ id: "complete", type: "function", function: { name: "task_complete", arguments: '{"outcome":"succeeded","summary":"Translated the article","verification":["Read it back"]}' } }] }, "cache_4"),
+      response({ role: "assistant", content: "Acknowledged." }, "cache_5"),
+    ];
+    globalThis.fetch = async (_, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return replies[requests.length - 1];
+    };
+    const tool: AgentTool = {
+      definition: { type: "function", function: { name: "lookup", description: "Lookup", parameters: { type: "object", properties: {} } } },
+      execute: async () => "Article text",
+    };
+    const result = await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "Translate", tools: [tool], signal: new AbortController().signal, onTrace: (event) => trace.push(event) });
+    assert.equal(requests.length, 5);
+    assert.deepEqual(requests[0].tools?.map((entry) => entry.function.name), ["lookup", "task_start", "task_complete"]);
+    assert.match(requests[3].messages.at(-1)?.content ?? "", /not complete until you call task_complete/);
+    assert.equal(requests[4].conversation_id, "cache_4");
+    assert.equal(requests[4].tool_choice, "none");
+    assert.deepEqual(requests[4].tools?.map((entry) => entry.function.name), ["lookup", "task_start", "task_complete"]);
+    assert.match(requests[4].messages.at(-1)?.content ?? "", /host accepted this terminal result/);
+    assert.match(result.content, /^Translated the article\n\n검증:/);
+    assert.equal(result.content.includes("Acknowledged"), false);
+    assert.equal(result.state.conversationId, "cache_5");
+    assert.equal(result.state.activeTask, null);
+    assert.equal(trace.find((event) => event.event === "task_completed")?.taskOutcome, "succeeded");
+  });
+
+  it("rejects task_complete without an active task", async () => {
+    const requests: Array<{ messages: ModelMessage[] }> = [];
+    globalThis.fetch = async (_, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return requests.length === 1
+        ? response({ role: "assistant", content: "", tool_calls: [{ id: "premature", type: "function", function: { name: "task_complete", arguments: '{"outcome":"succeeded","summary":"Done"}' } }] })
+        : response({ role: "assistant", content: "I need to start first." });
+    };
+    const result = await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "Inspect", signal: new AbortController().signal });
+    assert.match(requests[1].messages.at(-1)?.content ?? "", /활성 task_start/);
+    assert.equal(result.content, "I need to start first.");
+  });
+
+  it("rejects extra tool calls after task completion", async () => {
+    const requests: Array<{ messages: ModelMessage[]; tool_choice?: string }> = [];
+    let executed = 0;
+    const replies = [
+      response({ role: "assistant", content: "", tool_calls: [{ id: "start", type: "function", function: { name: "task_start", arguments: '{"objective":"Inspect"}' } }] }),
+      response({ role: "assistant", content: "", tool_calls: [{ id: "complete", type: "function", function: { name: "task_complete", arguments: '{"outcome":"blocked","summary":"Cannot inspect","blocker":"Page unavailable"}' } }] }),
+      response({ role: "assistant", content: "", tool_calls: [{ id: "extra", type: "function", function: { name: "lookup", arguments: "{}" } }] }),
+      response({ role: "assistant", content: "Acknowledged." }),
+    ];
+    globalThis.fetch = async (_, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return replies[requests.length - 1];
+    };
+    const tool: AgentTool = {
+      definition: { type: "function", function: { name: "lookup", description: "Lookup", parameters: { type: "object", properties: {} } } },
+      execute: async () => { executed++; return "result"; },
+    };
+    const result = await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "Inspect", tools: [tool], signal: new AbortController().signal });
+    assert.equal(executed, 0);
+    assert.equal(requests[2].tool_choice, "none");
+    assert.match(requests[3].messages.at(-1)?.content ?? "", /이미 완료되어 추가 도구를 실행할 수 없습니다/);
+    assert.match(result.content, /막힌 이유: Page unavailable/);
+  });
+
+  it("requires task_complete to be the only tool call in its model turn", async () => {
+    const requests: Array<{ messages: ModelMessage[] }> = [];
+    const replies = [
+      response({ role: "assistant", content: "", tool_calls: [{ id: "start", type: "function", function: { name: "task_start", arguments: '{"objective":"Inspect"}' } }] }),
+      response({ role: "assistant", content: "", tool_calls: [
+        { id: "early", type: "function", function: { name: "task_complete", arguments: '{"outcome":"succeeded","summary":"Too early"}' } },
+        { id: "lookup", type: "function", function: { name: "lookup", arguments: "{}" } },
+      ] }),
+      response({ role: "assistant", content: "", tool_calls: [{ id: "complete", type: "function", function: { name: "task_complete", arguments: '{"outcome":"succeeded","summary":"Finished"}' } }] }),
+      response({ role: "assistant", content: "Acknowledged." }),
+    ];
+    globalThis.fetch = async (_, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return replies[requests.length - 1];
+    };
+    const tool: AgentTool = {
+      definition: { type: "function", function: { name: "lookup", description: "Lookup", parameters: { type: "object", properties: {} } } },
+      execute: async () => "looked up",
+    };
+    const result = await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "Inspect", tools: [tool], signal: new AbortController().signal });
+    assert.match(requests[2].messages.at(-2)?.content ?? "", /단독 도구 호출/);
+    assert.equal(requests[2].messages.at(-1)?.content, "looked up");
+    assert.equal(result.content, "Finished");
+  });
+
   it("runs a tool round and retains matching assistant and tool messages", async () => {
     const requests: Array<{ messages: ModelMessage[]; tools: unknown[]; conversation_id?: string }> = [];
     const trace: AgentTraceEvent[] = [];
@@ -152,6 +247,33 @@ describe("Qumi agent loop", () => {
     assert.equal(requests.at(-1)?.conversation_id, undefined);
     assert.equal(result.state.conversationId, "new_cache");
     assert.equal(state.conversationId, "old_cache");
+  });
+
+  it("reminds the model of an active task after compaction", async () => {
+    const old = "오래된 페이지 결과 ".repeat(650);
+    const state = {
+      transcript: [{ role: "user", content: old }] as ModelMessage[],
+      context: [{ role: "system", content: "기본 지시" }, { role: "user", content: old }] as ModelMessage[],
+      conversationId: "old_cache", providerOverhead: 0,
+      activeTask: { objective: "Translate the article", completionCriteria: ["All paragraphs translated"] },
+    };
+    const requests: Array<{ messages: ModelMessage[]; tool_choice?: string }> = [];
+    globalThis.fetch = async (_, init) => {
+      const body = JSON.parse(String(init?.body));
+      requests.push(body);
+      if (body.messages[0].content.startsWith("Summarize the conversation data")) {
+        return response({ role: "assistant", content: '{"current_request":["Translate the article"],"active_work":["translation"],"facts":[]}' });
+      }
+      if (body.tool_choice === "none") return response({ role: "assistant", content: "Acknowledged." });
+      assert.match(body.messages.at(-1)?.content ?? "", /already started before context compaction/);
+      assert.match(body.messages.at(-1)?.content ?? "", /Translate the article/);
+      return response({ role: "assistant", content: "", tool_calls: [{ id: "complete", type: "function", function: { name: "task_complete", arguments: '{"outcome":"succeeded","summary":"Article translated"}' } }] });
+    };
+    const result = await runTurn({ settings, contextWindow: 4000, state, prompt: "Continue", signal: new AbortController().signal });
+    assert.equal(result.content, "Article translated");
+    assert.equal(result.state.activeTask, null);
+    assert.ok(requests.length >= 3);
+    assert.equal(state.activeTask.objective, "Translate the article");
   });
 
   it("summarizes oversized history in chunks and retains facts from an older checkpoint", async () => {
