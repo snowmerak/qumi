@@ -65,16 +65,17 @@ export async function hasPageAccess(candidate: PageCandidate): Promise<boolean> 
 export async function requestPageAccess(candidate: PageCandidate): Promise<PageTarget> {
   if (!canReadPages()) throw new Error("페이지 연결은 설치된 Chrome 확장에서 사용할 수 있습니다.");
   if (candidate.loading) throw new Error("페이지 로딩이 끝난 뒤 연결해 주세요.");
-  const pattern = pagePermissionPattern(candidate.url);
-  let granted: boolean;
-  try {
-    // This must be called directly from the Connect button's user gesture.
-    granted = await chrome.permissions.request({ origins: [pattern] });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : "Chrome 권한 요청 오류";
-    throw new Error(`사이트 접근 권한을 요청하지 못했습니다: ${reason}. Qumi 확장을 새로고침한 뒤 다시 시도해 주세요.`);
+  if (!await hasPageAccess(candidate)) {
+    let granted: boolean;
+    try {
+      // Access withheld by the browser still requires the Connect button's user gesture.
+      granted = await chrome.permissions.request({ origins: [pagePermissionPattern(candidate.url)] });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Chrome 권한 요청 오류";
+      throw new Error(`사이트 접근 권한을 요청하지 못했습니다: ${reason}. 브라우저의 Qumi 사이트 접근 설정을 확인해 주세요.`);
+    }
+    if (!granted) throw new Error("사이트 접근 권한이 거부되었습니다. 브라우저의 Qumi 사이트 접근 설정을 확인해 주세요.");
   }
-  if (!granted) throw new Error("사이트 접근 권한이 거부되었습니다. Chrome 권한을 허용한 뒤 다시 연결해 주세요.");
   return capturePageTarget(candidate);
 }
 
@@ -187,7 +188,7 @@ export function navigationTool(
       type: "function",
       function: {
         name: "navigate_to_url",
-        description: "Navigate the connected Chrome tab to an HTTP(S) URL or open the URL in a new tab. Confirmation follows the browser work setting. Qumi reconnects after load when site permission exists; a new site needs the user's Connect click.",
+        description: "Navigate the connected Chrome tab to an HTTP(S) URL or open the URL in a new tab. Confirmation follows the browser work setting. Qumi reconnects after load when browser site access is granted.",
         parameters: {
           type: "object",
           properties: {
@@ -254,7 +255,7 @@ export function switchTabTool(
       type: "function",
       function: {
         name: "switch_to_tab",
-        description: "Switch to an existing HTTP(S) tab from list_open_tabs in the same Chrome window. Confirmation follows the browser work setting. Qumi reconnects after load when site permission exists; a new site needs the user's Connect click.",
+        description: "Switch to an existing HTTP(S) tab from list_open_tabs in the same Chrome window. Confirmation follows the browser work setting. Qumi reconnects after load when browser site access is granted.",
         parameters: { type: "object", properties: { tabId: { type: "integer" } }, required: ["tabId"], additionalProperties: false },
       },
     },

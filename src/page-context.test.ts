@@ -30,7 +30,10 @@ describe("Chrome page tools", () => {
     const order: string[] = [];
     mockChrome({
       tabs: { query: async () => { order.push("query"); return [{ id: 7, windowId: 2, url: target.url, title: target.title }]; } },
-      permissions: { request: async ({ origins }: { origins: string[] }) => { order.push(`request:${origins[0]}`); return true; } },
+      permissions: {
+        contains: async () => false,
+        request: async ({ origins }: { origins: string[] }) => { order.push(`request:${origins[0]}`); return true; },
+      },
       scripting: { executeScript: async () => { order.push("inject"); return [{ result: { url: target.url, title: target.title } }]; } },
     });
     const candidate = await getActivePageCandidate();
@@ -38,6 +41,20 @@ describe("Chrome page tools", () => {
     order.length = 0;
     assert.deepEqual(await requestPageAccess(candidate!), target);
     assert.deepEqual(order, ["request:https://example.com/*", "query", "inject"]);
+  });
+
+  it("connects without another permission request when browser site access is already granted", async () => {
+    let requests = 0;
+    mockChrome({
+      tabs: { query: async () => [{ id: 7, windowId: 2, url: target.url, title: target.title }] },
+      permissions: {
+        contains: async () => true,
+        request: async () => { requests++; return true; },
+      },
+      scripting: { executeScript: async () => [{ result: { url: target.url, title: target.title } }] },
+    });
+    assert.deepEqual(await requestPageAccess(target), target);
+    assert.equal(requests, 0);
   });
 
   it("auto-connects only after loading and when site permission already exists", async () => {

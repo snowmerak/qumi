@@ -521,7 +521,7 @@ export function App() {
             <div className="page-bar__context">
               <span className="page-bar__label">현재 페이지</span>
               <span className="page-bar__title" title={pageTarget?.url || pageCandidate?.url}>{pageTarget ? `${pageTarget.title} · ${pageTarget.url}` : pageAccessAvailable ? pageCandidate ? `${pageCandidate.title} · ${pageCandidate.url}` : "연결할 웹페이지 없음" : "Chrome 확장에서 연결 가능"}</span>
-              <span className="page-bar__hint">{pageTarget ? "페이지를 읽으면 내용이 Q Gateway에 전달됩니다." : pageAccessAvailable ? pageCandidate ? pageCandidate.loading ? "페이지 로딩 중…" : `${new URL(pageCandidate.url).hostname} 접근 권한이 있으면 자동 연결됩니다. 처음 방문한 사이트는 연결을 눌러 주세요.` : "일반 HTTP(S) 웹페이지를 열어 주세요." : "확장을 Chrome에 로드하면 연결할 수 있습니다."}</span>
+              <span className="page-bar__hint">{pageTarget ? "페이지를 읽으면 내용이 Q Gateway에 전달됩니다." : pageAccessAvailable ? pageCandidate ? pageCandidate.loading ? "페이지 로딩 중…" : "페이지 로드 후 자동 연결됩니다. 브라우저에서 사이트 접근을 제한했다면 연결을 눌러 주세요." : "일반 HTTP(S) 웹페이지를 열어 주세요." : "확장을 Chrome에 로드하면 연결할 수 있습니다."}</span>
               {pageError && <span className="page-bar__error" role="alert">{pageError}</span>}
             </div>
             {!pageTarget && <button className="mp-button mp-button--secondary" type="button" onClick={() => void attachPage()} disabled={sending || !pageAccessAvailable || !pageCandidate || !!pageCandidate.loading}>연결</button>}

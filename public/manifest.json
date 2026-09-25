@@ -24,11 +24,5 @@
     "default_path": "sidepanel.html"
   },
   "permissions": ["sidePanel", "storage", "scripting", "tabs"],
-  "host_permissions": [
-    "http://127.0.0.1/*",
-    "http://localhost/*",
-    "https://127.0.0.1/*",
-    "https://localhost/*"
-  ],
-  "optional_host_permissions": ["http://*/*", "https://*/*"]
+  "host_permissions": ["http://*/*", "https://*/*"]
 }
