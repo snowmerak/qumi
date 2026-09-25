@@ -173,6 +173,42 @@ describe("Chrome page tools", () => {
     assert.equal(commands[4].fingerprint, "abc123");
   });
 
+  it("reviews attribute changes before setting or removing them", async () => {
+    const commands: Array<{ action: string; selector: string; attribute?: string; value?: string | null; expectedAttributeValue?: string | null; fingerprint?: string }> = [];
+    mockChrome({
+      tabs: { query: async () => [{ id: 7, url: target.url }] },
+      scripting: { executeScript: async ({ args }: { args: Array<(typeof commands)[number]> }) => {
+        const command = args[0];
+        commands.push(command);
+        return [{ result: { ok: true, url: target.url, result: command.action === "readAttribute"
+          ? { tag: "button", label: "Submit", value: "old", fingerprint: "abc123" }
+          : { selector: command.selector, attribute: command.attribute, written: true } } }];
+      } },
+    });
+    const selector = "body > button:nth-of-type(1)";
+    const signal = new AbortController().signal;
+    const denied = domWriteTool(target, async (_title, detail) => {
+      assert.match(detail, /속성: class/);
+      assert.match(detail, /기존 값: "old"/);
+      assert.match(detail, /새 값: "new"/);
+      return false;
+    });
+    assert.match(await denied.execute({ selector, attribute: "class", value: "new" }, signal), /"approved":false/);
+    assert.deepEqual(commands.map((command) => command.action), ["readAttribute"]);
+    await assert.rejects(denied.execute({ selector, attribute: "onclick", value: "alert(1)" }, signal), /변경할 수 없는 속성/);
+    assert.deepEqual(commands.map((command) => command.action), ["readAttribute"]);
+
+    const approved = domWriteTool(target, async (_title, detail) => {
+      assert.match(detail, /새 값: null \(속성 제거\)/);
+      return true;
+    });
+    await approved.execute({ selector, attribute: "class", value: null }, signal);
+    assert.deepEqual(commands.map((command) => command.action), ["readAttribute", "readAttribute", "writeAttribute"]);
+    assert.equal(commands[2].expectedAttributeValue, "old");
+    assert.equal(commands[2].fingerprint, "abc123");
+    assert.equal(commands[2].value, null);
+  });
+
   it("reports ambiguous selectors from the page instead of acting on multiple elements", async () => {
     mockChrome({
       tabs: { query: async () => [{ id: 7, url: target.url }] },

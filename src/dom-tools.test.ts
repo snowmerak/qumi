@@ -8,10 +8,13 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
     parentElement: FakeElement | null = null;
     innerText = "";
     clicks = 0;
+    attributes = new Map<string, string>();
     tagName: string;
     constructor(tagName: string) { this.tagName = tagName; }
     add(child: FakeElement): FakeElement { child.parentElement = this; this.children.push(child); return child; }
-    getAttribute(): null { return null; }
+    getAttribute(name: string): string | null { return this.attributes.get(name) ?? null; }
+    setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
+    removeAttribute(name: string): void { this.attributes.delete(name); }
     closest(): null { return null; }
     getClientRects(): number[] { return [1]; }
     matches(): boolean { return false; }
@@ -73,6 +76,16 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
     assert.equal(inspectDom({ action: "write", selector: inputSelector, value: "Hello", fingerprint: beforeWrite }).result?.written, true);
     assert.equal(input.value, "Hello");
     assert.match(inspectDom({ action: "write", selector: inputSelector, value: "Again", fingerprint: beforeWrite }).error || "", /바뀌었습니다/);
+    const beforeAttribute = inspectDom({ action: "readAttribute", selector: buttonSelector, attribute: "aria-label" }).result;
+    assert.equal(beforeAttribute?.value, null);
+    assert.equal(inspectDom({ action: "writeAttribute", selector: buttonSelector, attribute: "aria-label", value: "Continue", expectedAttributeValue: null, fingerprint: String(beforeAttribute?.fingerprint) }).result?.written, true);
+    assert.equal(first.getAttribute("aria-label"), "Continue");
+    const updatedAttribute = inspectDom({ action: "readAttribute", selector: buttonSelector, attribute: "aria-label" }).result;
+    assert.match(inspectDom({ action: "writeAttribute", selector: buttonSelector, attribute: "aria-label", value: "Wrong", expectedAttributeValue: null, fingerprint: String(updatedAttribute?.fingerprint) }).error || "", /속성 값이 바뀌었습니다/);
+    assert.equal(inspectDom({ action: "writeAttribute", selector: buttonSelector, attribute: "aria-label", value: null, expectedAttributeValue: "Continue", fingerprint: String(updatedAttribute?.fingerprint) }).result?.written, true);
+    assert.equal(first.getAttribute("aria-label"), null);
+    assert.match(inspectDom({ action: "readAttribute", selector: buttonSelector, attribute: "onclick" }).error || "", /변경할 수 없는 속성/);
+    assert.match(inspectDom({ action: "readAttribute", selector: buttonSelector, attribute: "href" }).error || "", /변경할 수 없는 속성/);
     const beforeClick = String(inspectDom({ action: "describe", selector: buttonSelector }).result?.fingerprint);
     assert.equal(inspectDom({ action: "click", selector: buttonSelector, fingerprint: beforeClick }).result?.clicked, true);
     await new Promise((resolve) => setTimeout(resolve, 10));

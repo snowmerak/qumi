@@ -1,14 +1,16 @@
 import type { AgentTool } from "./agent.ts";
 import type { PageTarget } from "./page-context.ts";
 
-type DomAction = "list" | "read" | "describe" | "write" | "click";
+type DomAction = "list" | "read" | "describe" | "write" | "readAttribute" | "writeAttribute" | "click";
 
 interface DomCommand {
   action: DomAction;
   selector: string;
   offset?: number;
   limit?: number;
-  value?: string | boolean;
+  value?: string | boolean | null;
+  attribute?: string;
+  expectedAttributeValue?: string | null;
   fingerprint?: string;
 }
 
@@ -26,6 +28,11 @@ export function inspectDom(command: DomCommand): DomReply {
   const pageUrl = location.href;
   const hiddenTags = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "META", "LINK"]);
   const cleanText = (value: string, max: number) => value.replace(/\s+/g, " ").trim().slice(0, max);
+
+  function allowedAttribute(name: string): boolean {
+    return /^(aria|data)-[a-z0-9_-]+$/.test(name)
+      || ["id", "class", "title", "role", "lang", "dir", "hidden", "disabled", "readonly", "required", "placeholder", "alt", "tabindex"].includes(name);
+  }
 
   function isVisible(element: Element): boolean {
     if (element.closest("[hidden], [aria-hidden='true']")) return false;
@@ -110,7 +117,21 @@ export function inspectDom(command: DomCommand): DomReply {
       return { ok: true, url: pageUrl, result: { ...summary, attributes, text: cleanText((element as HTMLElement).innerText || "", 8000), value, checked } };
     }
 
+    if (command.action === "readAttribute") {
+      if (!command.attribute || !allowedAttribute(command.attribute)) throw new Error("변경할 수 없는 속성입니다.");
+      return { ok: true, url: pageUrl, result: { ...summary, attribute: command.attribute, value: element.getAttribute(command.attribute) } };
+    }
+
     if (!command.fingerprint || command.fingerprint !== fingerprintOf(element)) throw new Error("승인 후 요소가 바뀌었습니다. 다시 확인해 주세요.");
+    if (command.action === "writeAttribute") {
+      const name = command.attribute;
+      if (!name || !allowedAttribute(name) || (typeof command.value !== "string" && command.value !== null) || (typeof command.value === "string" && command.value.length > 4000)) throw new Error("속성 변경 인수가 올바르지 않습니다.");
+      const previousValue = element.getAttribute(name);
+      if (previousValue !== command.expectedAttributeValue) throw new Error("승인 후 속성 값이 바뀌었습니다. 다시 확인해 주세요.");
+      if (command.value === null) element.removeAttribute(name);
+      else element.setAttribute(name, command.value);
+      return { ok: true, url: pageUrl, result: { selector: command.selector, attribute: name, previousValue, value: command.value, written: true } };
+    }
     if (command.action === "write") {
       if (element instanceof HTMLInputElement) {
         if (element.disabled || element.readOnly || element.type === "password" || element.type === "hidden" || element.type === "file") throw new Error("이 입력란은 변경할 수 없습니다.");
@@ -169,7 +190,7 @@ async function runDom(target: PageTarget, command: DomCommand, signal: AbortSign
   signal.throwIfAborted();
   if (!reply || reply.url !== target.url) throw new Error(pageChanged);
   if (!reply.ok || !reply.result) throw new Error(reply.error || "DOM 작업에 실패했습니다.");
-  if (command.action !== "click" && command.action !== "write") await assertCurrentTarget(target);
+  if (command.action !== "click" && command.action !== "write" && command.action !== "writeAttribute") await assertCurrentTarget(target);
   return reply.result;
 }
 
@@ -182,6 +203,11 @@ function parseArgs(value: unknown, allowed: string[], required: string[] = []): 
 
 function parseSelector(value: unknown): string {
   if (typeof value !== "string" || !value.trim() || value.length > 500) throw new Error("CSS 선택자가 올바르지 않습니다.");
+  return value;
+}
+
+function parseAttribute(value: unknown): string {
+  if (typeof value !== "string" || !(/^(aria|data)-[a-z0-9_-]+$/.test(value) || ["id", "class", "title", "role", "lang", "dir", "hidden", "disabled", "readonly", "required", "placeholder", "alt", "tabindex"].includes(value))) throw new Error("변경할 수 없는 속성입니다.");
   return value;
 }
 
@@ -220,13 +246,22 @@ export function domWriteTool(target: PageTarget, approve: DomApproval): AgentToo
   return {
     definition: { type: "function", function: {
       name: "dom_write",
-      description: "Write to a visible input, textarea, select or editable element selected by unique CSS selector. Accepts string or checkbox/radio boolean. Requires user approval. Passwords and arbitrary HTML are excluded.",
-      parameters: { type: "object", properties: { selector: { type: "string" }, value: { type: ["string", "boolean"] } }, required: ["selector", "value"], additionalProperties: false },
+      description: "Write to one visible element selected by a unique CSS selector. Without attribute, set an input/textarea/select/editable value (string or checkbox/radio boolean). With attribute, set a permitted HTML attribute using a string, or remove it using null. Permitted: id, class, title, role, lang, dir, hidden, disabled, readonly, required, placeholder, alt, tabindex, aria-* and data-*. Requires user approval. URL, event handler, style and arbitrary HTML attributes are excluded.",
+      parameters: { type: "object", properties: { selector: { type: "string" }, attribute: { type: "string" }, value: { type: ["string", "boolean", "null"] } }, required: ["selector", "value"], additionalProperties: false },
     } },
     execute: async (input, signal) => {
-      const args = parseArgs(input, ["selector", "value"], ["selector", "value"]);
+      const args = parseArgs(input, ["selector", "attribute", "value"], ["selector", "value"]);
       const selector = parseSelector(args.selector);
       const value = args.value;
+      if (args.attribute !== undefined) {
+        const attribute = parseAttribute(args.attribute);
+        if ((typeof value !== "string" && value !== null) || (typeof value === "string" && value.length > 4000)) throw new Error("속성 값은 문자열 또는 제거를 뜻하는 null이어야 합니다.");
+        const element = await runDom(target, { action: "readAttribute", selector, attribute }, signal);
+        const previousValue = element.value as string | null;
+        const detail = `${target.url}\n${selector}\n${element.tag} ${element.label || element.text || ""}\n속성: ${attribute}\n기존 값: ${JSON.stringify(previousValue)}\n새 값: ${JSON.stringify(value)}${value === null ? " (속성 제거)" : ""}`;
+        if (!await approve("엘리먼트 속성 변경", detail, signal)) return JSON.stringify({ approved: false, selector, attribute });
+        return JSON.stringify(await runDom(target, { action: "writeAttribute", selector, attribute, value, expectedAttributeValue: previousValue, fingerprint: String(element.fingerprint) }, signal));
+      }
       if ((typeof value !== "string" && typeof value !== "boolean") || (typeof value === "string" && value.length > 4000)) throw new Error("쓸 값이 올바르지 않습니다.");
       const element = await runDom(target, { action: "describe", selector }, signal);
       const detail = `${target.url}\n${selector}\n${element.tag} ${element.label || element.text || ""}\n새 값: ${JSON.stringify(value)}`;
