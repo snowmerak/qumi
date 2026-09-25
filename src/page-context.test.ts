@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { capturePageTarget, getActivePageCandidate, requestPageAccess, listOpenTabsTool, navigationTool, readPageContext, switchTabTool, type PageTarget } from "./page-context.ts";
+import { capturePageTarget, getActivePageCandidate, hasPageAccess, requestPageAccess, listOpenTabsTool, navigationTool, readPageContext, switchTabTool, type PageTarget } from "./page-context.ts";
 import { domClickTool, domListTool, domReadTool, domWriteTool } from "./dom-tools.ts";
 
 const originalChrome = Object.getOwnPropertyDescriptor(globalThis, "chrome");
@@ -38,6 +38,31 @@ describe("Chrome page tools", () => {
     order.length = 0;
     assert.deepEqual(await requestPageAccess(candidate!), target);
     assert.deepEqual(order, ["request:https://example.com/*", "query", "inject"]);
+  });
+
+  it("auto-connects only after loading and when site permission already exists", async () => {
+    const origins: string[] = [];
+    let loading = true;
+    let granted = false;
+    mockChrome({
+      tabs: { query: async () => [{ id: 7, windowId: 2, url: target.url, title: target.title, status: loading ? "loading" : "complete" }] },
+      permissions: {
+        request: async () => true,
+        contains: async ({ origins: patterns }: { origins: string[] }) => { origins.push(...patterns); return granted; },
+      },
+      scripting: { executeScript: async () => [{ result: { url: target.url, title: target.title } }] },
+    });
+    const pending = await getActivePageCandidate();
+    assert.equal(pending?.loading, true);
+    await assert.rejects(capturePageTarget(pending!), /페이지가 바뀌었습니다/);
+    loading = false;
+    const candidate = await getActivePageCandidate();
+    assert.deepEqual(candidate, target);
+    assert.equal(await hasPageAccess(candidate!), false);
+    granted = true;
+    assert.equal(await hasPageAccess(candidate!), true);
+    assert.deepEqual(origins, ["https://example.com/*", "https://example.com/*"]);
+    assert.deepEqual(await capturePageTarget(candidate!), target);
   });
 
   it("does not inject when site permission is declined or the tab changes", async () => {
@@ -85,7 +110,7 @@ describe("Chrome page tools", () => {
     await assert.rejects(denied.execute({ url: "javascript:alert(1)", disposition: "current_tab" }, signal), /http 또는 https/);
     let navigated = false;
     const allowed = navigationTool(target, async () => true, () => { navigated = true; });
-    assert.match(await allowed.execute({ url: "https://example.org", disposition: "current_tab" }, signal), /"reconnectRequired":true/);
+    assert.match(await allowed.execute({ url: "https://example.org", disposition: "current_tab" }, signal), /"pageChanged":true/);
     assert.deepEqual(updates, [{ tabId: 7, url: "https://example.org/" }]);
     assert.equal(navigated, true);
     assert.match(await allowed.execute({ url: "https://example.net", disposition: "new_tab" }, signal), /"tabId":8/);
@@ -115,7 +140,7 @@ describe("Chrome page tools", () => {
       assert.equal(action, "existing_tab");
       return true;
     }, () => {});
-    assert.match(await switched.execute({ tabId: 8 }, signal), /"reconnectRequired":true/);
+    assert.match(await switched.execute({ tabId: 8 }, signal), /"pageChanged":true/);
     assert.deepEqual(updates, [8]);
     await assert.rejects(switched.execute({ tabId: 9 }, signal), /웹 탭을 찾지 못했습니다/);
   });

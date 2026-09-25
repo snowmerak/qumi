@@ -28,7 +28,7 @@ interface DomReply {
   error?: string;
 }
 
-const pageChanged = "페이지가 바뀌었습니다. 현재 탭을 다시 연결해 주세요.";
+const pageChanged = "페이지가 바뀌었습니다. 새 페이지 연결을 확인한 뒤 다시 요청해 주세요.";
 
 // Chrome serializes this function for executeScript. Keep its helpers and data inside it.
 export function inspectDom(command: DomCommand): DomReply {

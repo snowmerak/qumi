@@ -7,7 +7,7 @@ export interface PageTarget {
   title: string;
 }
 
-export type PageCandidate = PageTarget;
+export type PageCandidate = PageTarget & { loading?: boolean };
 
 export type NavigationDisposition = "current_tab" | "new_tab";
 export type TabAction = NavigationDisposition | "existing_tab";
@@ -20,7 +20,7 @@ interface PageSnapshot {
   links: Array<{ text: string; url: string }>;
 }
 
-const pageChanged = "페이지가 바뀌었습니다. 현재 탭을 다시 연결해 주세요.";
+const pageChanged = "페이지가 바뀌었습니다. 새 페이지 연결을 확인한 뒤 다시 요청해 주세요.";
 const noAccess = "이 페이지는 연결할 수 없습니다. 일반 HTTP(S) 웹페이지에서 다시 시도해 주세요.";
 
 export function canReadPages(): boolean {
@@ -48,7 +48,7 @@ export async function getActivePageCandidate(): Promise<PageCandidate | null> {
   if (!canReadPages()) return null;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || tab.id === undefined || tab.windowId === undefined || !isWebUrl(tab.url)) return null;
-  return { tabId: tab.id, windowId: tab.windowId, url: tab.url, title: tab.title || tab.url };
+  return { tabId: tab.id, windowId: tab.windowId, url: tab.url, title: tab.title || tab.url, ...(tab.status === "loading" ? { loading: true } : {}) };
 }
 
 function pagePermissionPattern(url: string): string {
@@ -57,8 +57,14 @@ function pagePermissionPattern(url: string): string {
   return `${parsed.protocol}//${parsed.hostname}/*`;
 }
 
+export async function hasPageAccess(candidate: PageCandidate): Promise<boolean> {
+  if (!canReadPages() || !chrome.permissions.contains) return false;
+  return chrome.permissions.contains({ origins: [pagePermissionPattern(candidate.url)] });
+}
+
 export async function requestPageAccess(candidate: PageCandidate): Promise<PageTarget> {
   if (!canReadPages()) throw new Error("페이지 연결은 설치된 Chrome 확장에서 사용할 수 있습니다.");
+  if (candidate.loading) throw new Error("페이지 로딩이 끝난 뒤 연결해 주세요.");
   const pattern = pagePermissionPattern(candidate.url);
   let granted: boolean;
   try {
@@ -76,6 +82,7 @@ export async function capturePageTarget(expected?: PageCandidate): Promise<PageT
   if (!canReadPages()) throw new Error("페이지 연결은 설치된 Chrome 확장에서 사용할 수 있습니다.");
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || tab.id === undefined || tab.windowId === undefined || !isWebUrl(tab.url)) throw new Error(noAccess);
+  if (tab.status === "loading") throw new Error(pageChanged);
   if (expected && (tab.id !== expected.tabId || tab.windowId !== expected.windowId || tab.url !== expected.url)) throw new Error(pageChanged);
   try {
     const [injection] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: pageMetadata });
@@ -180,7 +187,7 @@ export function navigationTool(
       type: "function",
       function: {
         name: "navigate_to_url",
-        description: "Navigate the connected Chrome tab to an HTTP(S) URL or open the URL in a new tab. Confirmation follows the browser work setting. After navigation, page access must be connected again.",
+        description: "Navigate the connected Chrome tab to an HTTP(S) URL or open the URL in a new tab. Confirmation follows the browser work setting. Qumi reconnects after load when site permission exists; a new site needs the user's Connect click.",
         parameters: {
           type: "object",
           properties: {
@@ -207,7 +214,7 @@ export function navigationTool(
         ? await chrome.tabs.update(target.tabId, { url })
         : await chrome.tabs.create({ windowId: target.windowId, url, active: true });
       onNavigated();
-      return JSON.stringify({ approved: true, url, tabId: tab?.id, reconnectRequired: true });
+      return JSON.stringify({ approved: true, url, tabId: tab?.id, pageChanged: true });
     },
   };
 }
@@ -247,7 +254,7 @@ export function switchTabTool(
       type: "function",
       function: {
         name: "switch_to_tab",
-        description: "Switch to an existing HTTP(S) tab from list_open_tabs in the same Chrome window. Confirmation follows the browser work setting. Page access must be connected again after switching.",
+        description: "Switch to an existing HTTP(S) tab from list_open_tabs in the same Chrome window. Confirmation follows the browser work setting. Qumi reconnects after load when site permission exists; a new site needs the user's Connect click.",
         parameters: { type: "object", properties: { tabId: { type: "integer" } }, required: ["tabId"], additionalProperties: false },
       },
     },
@@ -268,7 +275,7 @@ export function switchTabTool(
       if (!current || current.url !== selected.url) throw new Error("대상 탭이 바뀌었습니다. 탭 목록을 다시 확인해 주세요.");
       await chrome.tabs.update(selected.id, { active: true });
       onSwitched();
-      return JSON.stringify({ approved: true, tabId: selected.id, url: selected.url, reconnectRequired: true });
+      return JSON.stringify({ approved: true, tabId: selected.id, url: selected.url, pageChanged: true });
     },
   };
 }

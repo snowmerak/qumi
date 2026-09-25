@@ -114,6 +114,7 @@ describe("Qumi agent loop", () => {
   it("runs a tool round and retains matching assistant and tool messages", async () => {
     const requests: Array<{ messages: ModelMessage[]; tools: unknown[]; conversation_id?: string }> = [];
     const trace: AgentTraceEvent[] = [];
+    const progress: string[] = [];
     globalThis.fetch = async (_, init) => {
       const body = JSON.parse(String(init?.body));
       requests.push(body);
@@ -129,7 +130,7 @@ describe("Qumi agent loop", () => {
         return "조회 결과";
       },
     };
-    const result = await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "찾아줘", tools: [tool], signal: new AbortController().signal, onTrace: (event) => trace.push(event) });
+    const result = await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "찾아줘", tools: [tool], signal: new AbortController().signal, onTrace: (event) => trace.push(event), onEvent: (event) => progress.push(event.type === "tool" ? `tool:${event.name}` : event.type) });
     assert.equal(result.content, "찾았습니다.");
     assert.equal(result.state.conversationId, "cache_2");
     assert.equal(requests.length, 2);
@@ -137,6 +138,7 @@ describe("Qumi agent loop", () => {
     assert.equal(requests[1].messages.at(-2)?.role, "assistant");
     assert.deepEqual(requests[1].messages.at(-1), { role: "tool", tool_call_id: "call_1", content: "조회 결과" });
     assert.equal(result.state.transcript.length, 4);
+    assert.deepEqual(progress, ["model", "tool:lookup", "model"]);
     assert.deepEqual(trace.map((event) => event.event), ["turn_started", "model_requested", "model_completed", "tool_started", "tool_completed", "model_requested", "model_completed", "turn_completed"]);
     assert.deepEqual(trace.find((event) => event.event === "tool_completed")?.argumentKeys, ["query"]);
     assert.equal(JSON.stringify(trace).includes("Qumi"), false);
@@ -176,7 +178,7 @@ describe("Qumi agent loop", () => {
     ].join(""), { headers: { "Content-Type": "text/event-stream" } });
     const events: Array<{ type: string; text?: string }> = [];
     const result = await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "확인", signal: new AbortController().signal, onEvent: (event) => events.push(event) });
-    assert.deepEqual(events, [{ type: "thinking", text: "검토 중" }, { type: "delta", text: "완료" }]);
+    assert.deepEqual(events, [{ type: "model" }, { type: "thinking", text: "검토 중" }, { type: "delta", text: "완료" }]);
     assert.equal(result.content, "완료");
     assert.equal(result.state.transcript.at(-1)?.content, "완료");
   });

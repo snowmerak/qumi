@@ -9,7 +9,7 @@ import { emptyAgentState, runTurn, type AgentState } from "./agent";
 import { approvalPolicyFrom, requiresBrowserApproval, withReadApproval } from "./browser-approval";
 import { clearExecutionLog, createExecutionLog, readExecutionLog } from "./execution-log";
 import { emptyState, loadState, saveState, type AppSettings } from "./storage";
-import { canReadPages, getActivePageCandidate, requestPageAccess, listOpenTabsTool, navigationTool, pageContextTool, switchTabTool, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
+import { canReadPages, capturePageTarget, getActivePageCandidate, hasPageAccess, requestPageAccess, listOpenTabsTool, navigationTool, pageContextTool, switchTabTool, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
 import { domClickTool, domListTool, domReadTool, domWriteTool, scrollAllTextTool } from "./dom-tools";
 
 type Connection = "checking" | "connected" | "disconnected";
@@ -188,6 +188,7 @@ export function App() {
   const thinkingContent = useRef<HTMLParagraphElement>(null);
   const responseStarted = useRef(false);
   const requestController = useRef<AbortController | null>(null);
+  const pageCandidateRef = useRef<PageCandidate | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -233,29 +234,46 @@ export function App() {
     let currentTabId: number | null = null;
     const refresh = () => {
       const currentRevision = ++revision;
-      currentTabId = null;
-      setPageCandidate(null);
       void getActivePageCandidate().then((candidate) => {
         if (active && currentRevision === revision) {
           currentTabId = candidate?.tabId ?? null;
+          pageCandidateRef.current = candidate;
           setPageCandidate(candidate);
+          setPageTarget((current) => candidate && !candidate.loading && current?.tabId === candidate.tabId && current.url === candidate.url ? current : null);
+          setPageError("");
         }
-      }).catch(() => { if (active && currentRevision === revision) setPageCandidate(null); });
+      }).catch(() => { if (active && currentRevision === revision) { currentTabId = null; pageCandidateRef.current = null; setPageCandidate(null); setPageTarget(null); } });
     };
     const onUpdated = (tabId: number, change: { status?: string; url?: string }) => {
-      if (change.url || (tabId === currentTabId && (change.status === "loading" || change.status === "complete"))) refresh();
+      if ((tabId === currentTabId && (change.url || change.status === "loading" || change.status === "complete")) || (currentTabId === null && change.url)) refresh();
     };
     refresh();
     chrome.tabs.onActivated.addListener(refresh);
     chrome.tabs.onUpdated.addListener(onUpdated);
     chrome.tabs.onRemoved.addListener(refresh);
+    chrome.permissions.onAdded.addListener(refresh);
+    chrome.permissions.onRemoved.addListener(refresh);
     return () => {
       active = false;
       chrome.tabs.onActivated.removeListener(refresh);
       chrome.tabs.onUpdated.removeListener(onUpdated);
       chrome.tabs.onRemoved.removeListener(refresh);
+      chrome.permissions.onAdded.removeListener(refresh);
+      chrome.permissions.onRemoved.removeListener(refresh);
     };
   }, []);
+
+  useEffect(() => {
+    if (!pageCandidate || pageCandidate.loading || !canReadPages()) return;
+    let active = true;
+    void hasPageAccess(pageCandidate).then(async (granted) => {
+      if (!active) return;
+      if (!granted) { setPageTarget(null); return; }
+      const target = await capturePageTarget(pageCandidate);
+      if (active) { setPageTarget(target); setPageError(""); }
+    }).catch(() => { if (active) setPageTarget(null); });
+    return () => { active = false; };
+  }, [pageCandidate]);
 
   useEffect(() => {
     if (!pageTarget || !canReadPages()) return;
@@ -281,8 +299,17 @@ export function App() {
   async function attachPage() {
     setPageError("");
     if (!pageCandidate) { setPageError("일반 HTTP(S) 웹페이지를 연 뒤 다시 연결해 주세요."); return; }
-    try { setPageTarget(await requestPageAccess(pageCandidate)); }
-    catch (cause) { setPageTarget(null); setPageError(cause instanceof Error ? cause.message : "페이지에 연결하지 못했습니다."); }
+    if (pageCandidate.loading) { setPageError("페이지 로딩이 끝난 뒤 연결해 주세요."); return; }
+    const candidate = pageCandidate;
+    const stillCurrent = () => pageCandidateRef.current?.tabId === candidate.tabId && pageCandidateRef.current.url === candidate.url && !pageCandidateRef.current.loading;
+    try {
+      const target = await requestPageAccess(candidate);
+      if (stillCurrent()) setPageTarget(target);
+    } catch (cause) {
+      if (!stillCurrent()) return;
+      setPageTarget(null);
+      setPageError(cause instanceof Error ? cause.message : "페이지에 연결하지 못했습니다.");
+    }
   }
 
   function approveAction(title: string, detail: string, signal: AbortSignal): Promise<boolean> {
@@ -374,6 +401,7 @@ export function App() {
           switchTabTool(pageTarget, approveNavigation, () => setPageTarget(null)),
         ] : [],
         onEvent: (event) => {
+          if (event.type === "model") setProgress("모델 응답 대기 중…");
           if (event.type === "thinking" && !responseStarted.current) {
             setProgress("생각 중…");
             setThinking((current) => (current + event.text).slice(-16_000));
@@ -437,10 +465,10 @@ export function App() {
             <div className="page-bar__context">
               <span className="page-bar__label">현재 페이지</span>
               <span className="page-bar__title" title={pageTarget?.url || pageCandidate?.url}>{pageTarget ? `${pageTarget.title} · ${pageTarget.url}` : pageAccessAvailable ? pageCandidate ? `${pageCandidate.title} · ${pageCandidate.url}` : "연결할 웹페이지 없음" : "Chrome 확장에서 연결 가능"}</span>
-              <span className="page-bar__hint">{pageTarget ? "페이지를 읽으면 내용이 Q Gateway에 전달됩니다." : pageAccessAvailable ? pageCandidate ? `${new URL(pageCandidate.url).hostname} 접근 권한을 Chrome에 요청합니다. 권한은 사이트 단위로 저장됩니다.` : "일반 HTTP(S) 웹페이지를 열어 주세요." : "확장을 Chrome에 로드하면 연결할 수 있습니다."}</span>
+              <span className="page-bar__hint">{pageTarget ? "페이지를 읽으면 내용이 Q Gateway에 전달됩니다." : pageAccessAvailable ? pageCandidate ? pageCandidate.loading ? "페이지 로딩 중…" : `${new URL(pageCandidate.url).hostname} 접근 권한이 있으면 자동 연결됩니다. 처음 방문한 사이트는 연결을 눌러 주세요.` : "일반 HTTP(S) 웹페이지를 열어 주세요." : "확장을 Chrome에 로드하면 연결할 수 있습니다."}</span>
               {pageError && <span className="page-bar__error" role="alert">{pageError}</span>}
             </div>
-            <button className="mp-button mp-button--secondary" type="button" onClick={() => void attachPage()} disabled={sending || !pageAccessAvailable || !pageCandidate}>{pageTarget ? "다시 연결" : "연결"}</button>
+            {!pageTarget && <button className="mp-button mp-button--secondary" type="button" onClick={() => void attachPage()} disabled={sending || !pageAccessAvailable || !pageCandidate || !!pageCandidate.loading}>연결</button>}
           </div>
 
           <main className="chat-history" aria-label="대화 내용">

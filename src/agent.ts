@@ -19,6 +19,7 @@ export interface AgentTool {
 }
 
 export type AgentEvent =
+  | { type: "model" }
   | { type: "delta"; text: string }
   | { type: "thinking"; text: string }
   | { type: "tool"; name: string }
@@ -355,6 +356,7 @@ export async function runTurn(options: {
       const localEstimate = estimate(state.context) + estimate(availableTools.map((tool) => tool.definition));
       const modelStarted = performance.now();
       trace({ event: "model_requested", round });
+      onEvent?.({ type: "model" });
       const reply = await requestModel(
         settings, state.context, availableTools.map((tool) => tool.definition), state.conversationId,
         controller.signal, (delta) => onEvent?.({ type: delta.kind === "thinking" ? "thinking" : "delta", text: delta.text }),
@@ -440,6 +442,7 @@ export async function runTurn(options: {
           stage = "model";
           const modelStarted = performance.now();
           trace({ event: "model_requested", round });
+          onEvent?.({ type: "model" });
           const terminalMessages = [...state.context];
           const last = terminalMessages.at(-1);
           if (last?.role === "tool") terminalMessages[terminalMessages.length - 1] = {
