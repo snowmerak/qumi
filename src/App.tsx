@@ -151,6 +151,7 @@ export function App() {
   const [sending, setSending] = useState(false);
   const [pendingPrompt, setPendingPrompt] = useState("");
   const [streamed, setStreamed] = useState("");
+  const [thinking, setThinking] = useState("");
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
   const [pageTarget, setPageTarget] = useState<PageTarget | null>(null);
@@ -158,6 +159,8 @@ export function App() {
   const [pageError, setPageError] = useState("");
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const messagesEnd = useRef<HTMLDivElement>(null);
+  const thinkingContent = useRef<HTMLParagraphElement>(null);
+  const responseStarted = useRef(false);
   const requestController = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -192,7 +195,10 @@ export function App() {
     if (ready) void saveState({ settings, messages, agent }).catch(() => setError("대화 내용을 저장하지 못했습니다."));
   }, [ready, settings, messages, agent]);
 
-  useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, streamed, sending]);
+  useEffect(() => {
+    messagesEnd.current?.scrollIntoView({ behavior: sending ? "auto" : "smooth" });
+    if (thinkingContent.current) thinkingContent.current.scrollTop = thinkingContent.current.scrollHeight;
+  }, [messages, streamed, thinking, sending]);
 
   useEffect(() => {
     if (!canReadPages()) return;
@@ -304,6 +310,8 @@ export function App() {
     setPendingPrompt(content);
     setDraft("");
     setStreamed("");
+    setThinking("");
+    responseStarted.current = false;
     setProgress("응답 중…");
     setError("");
     setSending(true);
@@ -318,9 +326,18 @@ export function App() {
           switchTabTool(pageTarget, approveNavigation, () => setPageTarget(null)),
         ] : [],
         onEvent: (event) => {
-          if (event.type === "delta") setStreamed((current) => current + event.text);
-          if (event.type === "compacting") { setProgress("문맥 압축 중…"); setStreamed(""); }
-          if (event.type === "tool") { setProgress(`${event.name} 실행 중…`); setStreamed(""); }
+          if (event.type === "thinking" && !responseStarted.current) {
+            setProgress("생각 중…");
+            setThinking((current) => (current + event.text).slice(-16_000));
+          }
+          if (event.type === "delta") {
+            responseStarted.current = true;
+            setThinking("");
+            setProgress("응답 중…");
+            setStreamed((current) => current + event.text);
+          }
+          if (event.type === "compacting") { responseStarted.current = false; setProgress("문맥 압축 중…"); setStreamed(""); setThinking(""); }
+          if (event.type === "tool") { responseStarted.current = false; setProgress(`${event.name} 실행 중…`); setStreamed(""); setThinking(""); }
         },
       });
       setAgent(result.state);
@@ -332,6 +349,7 @@ export function App() {
       requestController.current = null;
       setPendingPrompt("");
       setStreamed("");
+      setThinking("");
       setProgress("");
       setSending(false);
     }
@@ -394,6 +412,7 @@ export function App() {
               ))}
               {pendingPrompt && <article className="message message--user"><div className="message__label">사용자</div><p className="message__content">{pendingPrompt}</p></article>}
               {sending && <div className="pending-message" role="status"><span className="mp-spinner" aria-hidden="true" />{progress}</div>}
+              {sending && thinking && !streamed && <div className="thinking-preview" aria-label="모델 생각"><div className="thinking-preview__label">생각 중</div><p className="thinking-preview__content" ref={thinkingContent}>{thinking}</p></div>}
               {streamed && <article className="message message--assistant"><div className="message__label">Qumi</div><p className="message__content">{streamed}</p></article>}
               <div ref={messagesEnd} />
             </div>

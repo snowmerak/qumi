@@ -3,15 +3,22 @@ import assert from "node:assert/strict";
 import { inspectDom } from "./dom-tools.ts";
 
 it("builds unique CSS paths and applies reviewed writes and clicks", async () => {
+  class FakeText {
+    nodeType = 3;
+    textContent: string;
+    constructor(textContent: string) { this.textContent = textContent; }
+  }
   class FakeElement {
     children: FakeElement[] = [];
+    childNodes: Array<FakeElement | FakeText> = [];
     parentElement: FakeElement | null = null;
     innerText = "";
     clicks = 0;
     attributes = new Map<string, string>();
     tagName: string;
     constructor(tagName: string) { this.tagName = tagName; }
-    add(child: FakeElement): FakeElement { child.parentElement = this; this.children.push(child); return child; }
+    add(child: FakeElement): FakeElement { child.parentElement = this; this.children.push(child); this.childNodes.push(child); return child; }
+    addText(value: string): FakeText { const node = new FakeText(value); this.childNodes.push(node); return node; }
     getAttribute(name: string): string | null { return this.attributes.get(name) ?? null; }
     setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
     removeAttribute(name: string): void { this.attributes.delete(name); }
@@ -40,6 +47,9 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
   main.add(new FakeElement("BUTTON"));
   const input = main.add(new FakeInput()) as FakeInput;
   first.innerText = "Go";
+  const buttonText = first.addText("Go");
+  const nested = first.add(new FakeElement("STRONG"));
+  nested.addText(" now");
   const buttonSelector = "body > main:nth-of-type(1) > button:nth-of-type(1)";
   const inputSelector = "body > main:nth-of-type(1) > input:nth-of-type(1)";
   const globals: Record<string, unknown> = {
@@ -70,6 +80,14 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
     const children = inspectDom({ action: "list", selector: "body > main:nth-of-type(1)" });
     assert.equal((children.result?.children as Array<{ selector: string }>)[0].selector, buttonSelector);
     assert.equal(inspectDom({ action: "read", selector: buttonSelector }).result?.text, "Go");
+    assert.deepEqual(inspectDom({ action: "read", selector: buttonSelector }).result?.textNodes, [{ index: 0, text: "Go", truncated: false }]);
+    const beforeText = inspectDom({ action: "readText", selector: buttonSelector, textNodeIndex: 0 }).result;
+    assert.equal(beforeText?.text, "Go");
+    assert.equal(inspectDom({ action: "writeText", selector: buttonSelector, textNodeIndex: 0, value: "가자", expectedText: "Go", fingerprint: String(beforeText?.fingerprint) }).result?.written, true);
+    assert.equal(buttonText.textContent, "가자");
+    assert.equal(first.children[0], nested);
+    assert.match(inspectDom({ action: "writeText", selector: buttonSelector, textNodeIndex: 0, value: "다시", expectedText: "Go", fingerprint: String(beforeText?.fingerprint) }).error || "", /본문 텍스트가 바뀌었습니다/);
+    assert.match(inspectDom({ action: "readText", selector: buttonSelector, textNodeIndex: 1 }).error || "", /텍스트 노드/);
     assert.match(inspectDom({ action: "read", selector: "button" }).error || "", /2개/);
     assert.match(inspectDom({ action: "click", selector: buttonSelector, fingerprint: "stale" }).error || "", /바뀌었습니다/);
     const beforeWrite = String(inspectDom({ action: "describe", selector: inputSelector }).result?.fingerprint);

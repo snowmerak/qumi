@@ -50,13 +50,35 @@ describe("Q Gateway client", () => {
       },
     }), { headers: { "Content-Type": "text/event-stream" } });
     const deltas: string[] = [];
-    const reply = await requestModel(settings, [{ role: "user", content: "hi" }], [], "", new AbortController().signal, (text) => deltas.push(text));
+    const reply = await requestModel(settings, [{ role: "user", content: "hi" }], [], "", new AbortController().signal, (delta) => { if (delta.kind === "response") deltas.push(delta.text); });
     assert.equal(reply.message.content, "안녕");
     assert.deepEqual(deltas, ["안", "녕"]);
     assert.deepEqual(reply.message.tool_calls, [{ id: "call_1", type: "function", function: { name: "lookup", arguments: '{"key":"value"}' } }]);
     assert.equal(reply.conversationId, "cache_2");
     assert.equal(reply.promptTokens, 42);
     assert.equal(reply.cachedTokens, 12);
+  });
+
+  it("streams thinking separately from the final answer", async () => {
+    const events = [
+      'data: {"choices":[{"phase":"commentary","delta":{"content":"계획 "}}]}\n\n',
+      'data: {"choices":[{"delta":{"reasoning_content":"확인 "}}]}\n\n',
+      'data: {"choices":[{"delta":{"reasoning":"다음 ","content":"답"}}]}\n\n',
+      'data: {"choices":[{"delta":{"thinking":"단계","content":"변"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ].join("");
+    globalThis.fetch = async () => new Response(events, { headers: { "Content-Type": "text/event-stream" } });
+    const deltas: Array<{ kind: string; text: string }> = [];
+    const reply = await requestModel(settings, [{ role: "user", content: "hi" }], [], "", new AbortController().signal, (delta) => deltas.push(delta));
+    assert.deepEqual(deltas, [
+      { kind: "thinking", text: "계획 " },
+      { kind: "thinking", text: "확인 " },
+      { kind: "thinking", text: "다음 " },
+      { kind: "response", text: "답" },
+      { kind: "thinking", text: "단계" },
+      { kind: "response", text: "변" },
+    ]);
+    assert.equal(reply.message.content, "답변");
   });
 
   it("retries without streaming when the gateway rejects stream options", async () => {
@@ -101,7 +123,7 @@ describe("Q Gateway client", () => {
       return new Response(events, { headers: { "Content-Type": "text/event-stream" } });
     };
     const deltas: string[] = [];
-    const reply = await requestModel(settings, [{ role: "user", content: "질문" }], [], "stale", new AbortController().signal, (text) => deltas.push(text));
+    const reply = await requestModel(settings, [{ role: "user", content: "질문" }], [], "stale", new AbortController().signal, (delta) => { if (delta.kind === "response") deltas.push(delta.text); });
     assert.equal(reply.message.content, "복구됨");
     assert.deepEqual(deltas, ["복구됨"]);
     assert.deepEqual(requests.map((request) => request.conversation_id), ["stale", undefined]);

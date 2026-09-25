@@ -36,6 +36,11 @@ export interface ModelReply {
   cachedTokens: number;
 }
 
+export interface StreamDelta {
+  kind: "thinking" | "response";
+  text: string;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -140,7 +145,7 @@ function parseToolCall(value: unknown): ToolCall {
   return { id: call.id, type: "function", function: { name: call.function.name, arguments: call.function.arguments } };
 }
 
-async function readStreamedReply(response: Response, previousConversationId: string, onDelta: (text: string) => void, onChunk: () => void): Promise<ModelReply> {
+async function readStreamedReply(response: Response, previousConversationId: string, onDelta: (delta: StreamDelta) => void, onChunk: () => void): Promise<ModelReply> {
   if (!response.body) throw new Error("Gateway 스트림을 읽을 수 없습니다.");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -161,7 +166,7 @@ async function readStreamedReply(response: Response, previousConversationId: str
       error?: { message?: string };
       conversation_id?: string;
       usage?: { prompt_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
-      choices?: Array<{ delta?: { content?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> } }>;
+      choices?: Array<{ phase?: string; delta?: { content?: string | null; reasoning_content?: string | null; reasoning?: string | null; thinking?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> } }>;
     };
     if (chunk.error) throw new Error(chunk.error.message || "Gateway 스트림이 실패했습니다.");
     onChunk();
@@ -170,9 +175,13 @@ async function readStreamedReply(response: Response, previousConversationId: str
     if (typeof chunk.usage?.prompt_tokens_details?.cached_tokens === "number") cachedTokens = chunk.usage.prompt_tokens_details.cached_tokens;
     for (const choice of chunk.choices ?? []) {
       const delta = choice.delta;
-      if (typeof delta?.content === "string") {
+      const thinking = choice.phase === "commentary" && typeof delta?.content === "string"
+        ? delta.content
+        : [delta?.reasoning_content, delta?.reasoning, delta?.thinking].find((value): value is string => typeof value === "string" && value.length > 0);
+      if (thinking) onDelta({ kind: "thinking", text: thinking });
+      if (choice.phase !== "commentary" && typeof delta?.content === "string") {
         content += delta.content;
-        onDelta(delta.content);
+        onDelta({ kind: "response", text: delta.content });
       }
       for (const fragment of delta?.tool_calls ?? []) {
         const index = fragment.index ?? 0;
@@ -228,7 +237,7 @@ async function requestModelOnce(
   tools: ToolDefinition[],
   conversationId: string,
   signal: AbortSignal,
-  onDelta?: (text: string) => void,
+  onDelta?: (delta: StreamDelta) => void,
   onChunk?: () => void,
 ): Promise<ModelReply> {
   const baseUrl = normalizeGatewayUrl(settings.baseUrl);
@@ -268,7 +277,7 @@ export async function requestModel(
   tools: ToolDefinition[],
   conversationId: string,
   signal: AbortSignal,
-  onDelta?: (text: string) => void,
+  onDelta?: (delta: StreamDelta) => void,
 ): Promise<ModelReply> {
   let receivedChunk = false;
   try {

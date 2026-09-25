@@ -209,6 +209,35 @@ describe("Chrome page tools", () => {
     assert.equal(commands[2].value, null);
   });
 
+  it("reviews page text replacement and keeps the selected text node", async () => {
+    const commands: Array<{ action: string; selector: string; textNodeIndex?: number; value?: string; expectedText?: string; fingerprint?: string }> = [];
+    mockChrome({
+      tabs: { query: async () => [{ id: 7, url: target.url }] },
+      scripting: { executeScript: async ({ args }: { args: Array<(typeof commands)[number]> }) => {
+        const command = args[0];
+        commands.push(command);
+        return [{ result: { ok: true, url: target.url, result: command.action === "readText"
+          ? { tag: "p", text: "Original text", fingerprint: "text123" }
+          : { selector: command.selector, textNodeIndex: command.textNodeIndex, written: true } } }];
+      } },
+    });
+    const selector = "body > p:nth-of-type(1)";
+    const signal = new AbortController().signal;
+    const denied = domWriteTool(target, async (_title, detail) => {
+      assert.match(detail, /기존 텍스트: "Original text"/);
+      assert.match(detail, /새 텍스트: "번역된 문장"/);
+      return false;
+    });
+    assert.match(await denied.execute({ selector, textNodeIndex: 0, value: "번역된 문장" }, signal), /"approved":false/);
+    assert.deepEqual(commands.map((command) => command.action), ["readText"]);
+    const approved = domWriteTool(target, async () => true);
+    await approved.execute({ selector, textNodeIndex: 0, value: "번역된 문장" }, signal);
+    assert.deepEqual(commands.map((command) => command.action), ["readText", "readText", "writeText"]);
+    assert.equal(commands[2].expectedText, "Original text");
+    assert.equal(commands[2].fingerprint, "text123");
+    assert.equal(commands[2].value, "번역된 문장");
+  });
+
   it("reports ambiguous selectors from the page instead of acting on multiple elements", async () => {
     mockChrome({
       tabs: { query: async () => [{ id: 7, url: target.url }] },

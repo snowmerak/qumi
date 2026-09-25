@@ -1,16 +1,19 @@
 import type { AgentTool } from "./agent.ts";
 import type { PageTarget } from "./page-context.ts";
 
-type DomAction = "list" | "read" | "describe" | "write" | "readAttribute" | "writeAttribute" | "click";
+type DomAction = "list" | "read" | "describe" | "write" | "readAttribute" | "writeAttribute" | "readText" | "writeText" | "click";
 
 interface DomCommand {
   action: DomAction;
   selector: string;
   offset?: number;
   limit?: number;
+  textOffset?: number;
   value?: string | boolean | null;
   attribute?: string;
+  textNodeIndex?: number;
   expectedAttributeValue?: string | null;
+  expectedText?: string;
   fingerprint?: string;
 }
 
@@ -27,6 +30,7 @@ const pageChanged = "페이지가 바뀌었습니다. 현재 탭을 다시 연�
 export function inspectDom(command: DomCommand): DomReply {
   const pageUrl = location.href;
   const hiddenTags = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "META", "LINK"]);
+  const textPageSize = 10;
   const cleanText = (value: string, max: number) => value.replace(/\s+/g, " ").trim().slice(0, max);
 
   function allowedAttribute(name: string): boolean {
@@ -42,6 +46,18 @@ export function inspectDom(command: DomCommand): DomReply {
 
   function childrenOf(element: Element): Element[] {
     return Array.from(element.children).filter((child) => !hiddenTags.has(child.tagName) && isVisible(child));
+  }
+
+  function textNodesOf(element: Element): Text[] {
+    return Array.from(element.childNodes).filter((node): node is Text => node.nodeType === 3 && Boolean(node.textContent?.trim()));
+  }
+
+  function selectedTextNode(element: Element, index: number | undefined): Text {
+    if (!Number.isSafeInteger(index) || index === undefined || index < 0) throw new Error("텍스트 노드 번호가 올바르지 않습니다.");
+    if (["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "TEXTAREA", "SELECT", "OPTION"].includes(element.tagName)) throw new Error("이 요소의 본문 텍스트는 변경할 수 없습니다.");
+    const node = textNodesOf(element)[index];
+    if (!node || (node.textContent || "").length > 4000) throw new Error("읽거나 변경할 수 있는 텍스트 노드를 찾지 못했습니다.");
+    return node;
   }
 
   function selectorFor(element: Element): string {
@@ -114,7 +130,15 @@ export function inspectDom(command: DomCommand): DomReply {
       const isPassword = element instanceof HTMLInputElement && input.type === "password";
       const value = isPassword ? "[redacted]" : element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ? input.value.slice(0, 4000) : undefined;
       const checked = element instanceof HTMLInputElement && (input.type === "checkbox" || input.type === "radio") ? input.checked : undefined;
-      return { ok: true, url: pageUrl, result: { ...summary, attributes, text: cleanText((element as HTMLElement).innerText || "", 8000), value, checked } };
+      const textNodes = textNodesOf(element);
+      const textOffset = command.textOffset ?? 0;
+      if (!Number.isSafeInteger(textOffset) || textOffset < 0) throw new Error("텍스트 노드 목록 범위가 올바르지 않습니다.");
+      return { ok: true, url: pageUrl, result: { ...summary, attributes, text: cleanText((element as HTMLElement).innerText || "", 8000), textNodeCount: textNodes.length, textNodes: textNodes.slice(textOffset, textOffset + textPageSize).map((node, index) => ({ index: textOffset + index, text: (node.textContent || "").slice(0, 4000), truncated: (node.textContent || "").length > 4000 })), nextTextOffset: textOffset + textPageSize < textNodes.length ? textOffset + textPageSize : null, value, checked } };
+    }
+
+    if (command.action === "readText") {
+      const node = selectedTextNode(element, command.textNodeIndex);
+      return { ok: true, url: pageUrl, result: { ...summary, textNodeIndex: command.textNodeIndex, text: node.textContent || "" } };
     }
 
     if (command.action === "readAttribute") {
@@ -123,6 +147,13 @@ export function inspectDom(command: DomCommand): DomReply {
     }
 
     if (!command.fingerprint || command.fingerprint !== fingerprintOf(element)) throw new Error("승인 후 요소가 바뀌었습니다. 다시 확인해 주세요.");
+    if (command.action === "writeText") {
+      if (typeof command.value !== "string" || command.value.length > 4000 || typeof command.expectedText !== "string") throw new Error("본문 텍스트 변경 인수가 올바르지 않습니다.");
+      const node = selectedTextNode(element, command.textNodeIndex);
+      if (node.textContent !== command.expectedText) throw new Error("승인 후 본문 텍스트가 바뀌었습니다. 다시 확인해 주세요.");
+      node.textContent = command.value;
+      return { ok: true, url: pageUrl, result: { selector: command.selector, textNodeIndex: command.textNodeIndex, written: true } };
+    }
     if (command.action === "writeAttribute") {
       const name = command.attribute;
       if (!name || !allowedAttribute(name) || (typeof command.value !== "string" && command.value !== null) || (typeof command.value === "string" && command.value.length > 4000)) throw new Error("속성 변경 인수가 올바르지 않습니다.");
@@ -190,7 +221,7 @@ async function runDom(target: PageTarget, command: DomCommand, signal: AbortSign
   signal.throwIfAborted();
   if (!reply || reply.url !== target.url) throw new Error(pageChanged);
   if (!reply.ok || !reply.result) throw new Error(reply.error || "DOM 작업에 실패했습니다.");
-  if (command.action !== "click" && command.action !== "write" && command.action !== "writeAttribute") await assertCurrentTarget(target);
+  if (command.action !== "click" && command.action !== "write" && command.action !== "writeAttribute" && command.action !== "writeText") await assertCurrentTarget(target);
   return reply.result;
 }
 
@@ -233,10 +264,15 @@ export function domReadTool(target: PageTarget): AgentTool {
   return {
     definition: { type: "function", function: {
       name: "dom_read",
-      description: "Read one visible DOM element by a unique CSS selector. Includes text, selected attributes and editable value. Password values are redacted.",
-      parameters: { type: "object", properties: { selector: { type: "string" } }, required: ["selector"], additionalProperties: false },
+      description: "Read one visible DOM element by a unique CSS selector. Includes text, selected attributes, editable value, and direct textNodes with indices. Use nextTextOffset to page through text nodes. Pass a text node index to dom_write to replace visible page body text while preserving nested elements. Password values are redacted.",
+      parameters: { type: "object", properties: { selector: { type: "string" }, textOffset: { type: "integer" } }, required: ["selector"], additionalProperties: false },
     } },
-    execute: async (value, signal) => JSON.stringify(await runDom(target, { action: "read", selector: parseSelector(parseArgs(value, ["selector"], ["selector"]).selector) }, signal)),
+    execute: async (value, signal) => {
+      const args = parseArgs(value, ["selector", "textOffset"], ["selector"]);
+      const textOffset = args.textOffset === undefined ? 0 : args.textOffset;
+      if (!Number.isSafeInteger(textOffset) || Number(textOffset) < 0) throw new Error("텍스트 노드 목록 범위가 올바르지 않습니다.");
+      return JSON.stringify(await runDom(target, { action: "read", selector: parseSelector(args.selector), textOffset: Number(textOffset) }, signal));
+    },
   };
 }
 
@@ -246,13 +282,23 @@ export function domWriteTool(target: PageTarget, approve: DomApproval): AgentToo
   return {
     definition: { type: "function", function: {
       name: "dom_write",
-      description: "Write to one visible element selected by a unique CSS selector. Without attribute, set an input/textarea/select/editable value (string or checkbox/radio boolean). With attribute, set a permitted HTML attribute using a string, or remove it using null. Permitted: id, class, title, role, lang, dir, hidden, disabled, readonly, required, placeholder, alt, tabindex, aria-* and data-*. Requires user approval. URL, event handler, style and arbitrary HTML attributes are excluded.",
-      parameters: { type: "object", properties: { selector: { type: "string" }, attribute: { type: "string" }, value: { type: ["string", "boolean", "null"] } }, required: ["selector", "value"], additionalProperties: false },
+      description: "Write to one visible element selected by a unique CSS selector. To edit ordinary page body text or translate it in place, first use dom_read, then pass its direct textNodes[].index as textNodeIndex with a new string value; nested links and markup remain intact. With attribute, set a permitted HTML attribute using a string or remove it using null. Without either field, set an input/textarea/select/editable value. Requires user approval for every write. URL, event handler, style and arbitrary HTML attributes are excluded.",
+      parameters: { type: "object", properties: { selector: { type: "string" }, attribute: { type: "string" }, textNodeIndex: { type: "integer" }, value: { type: ["string", "boolean", "null"] } }, required: ["selector", "value"], additionalProperties: false },
     } },
     execute: async (input, signal) => {
-      const args = parseArgs(input, ["selector", "attribute", "value"], ["selector", "value"]);
+      const args = parseArgs(input, ["selector", "attribute", "textNodeIndex", "value"], ["selector", "value"]);
       const selector = parseSelector(args.selector);
       const value = args.value;
+      if (args.attribute !== undefined && args.textNodeIndex !== undefined) throw new Error("속성과 본문 텍스트는 한 번에 하나만 변경해 주세요.");
+      if (args.textNodeIndex !== undefined) {
+        const textNodeIndex = args.textNodeIndex;
+        if (!Number.isSafeInteger(textNodeIndex) || Number(textNodeIndex) < 0 || typeof value !== "string" || value.length > 4000) throw new Error("본문 텍스트 변경 인수가 올바르지 않습니다.");
+        const element = await runDom(target, { action: "readText", selector, textNodeIndex: Number(textNodeIndex) }, signal);
+        const previousText = String(element.text);
+        const detail = `${target.url}\n${selector}\n${element.tag} ${element.label || ""}\n텍스트 노드: ${textNodeIndex}\n기존 텍스트: ${JSON.stringify(previousText)}\n새 텍스트: ${JSON.stringify(value)}`;
+        if (!await approve("페이지 본문 텍스트 변경", detail, signal)) return JSON.stringify({ approved: false, selector, textNodeIndex });
+        return JSON.stringify(await runDom(target, { action: "writeText", selector, textNodeIndex: Number(textNodeIndex), value, expectedText: previousText, fingerprint: String(element.fingerprint) }, signal));
+      }
       if (args.attribute !== undefined) {
         const attribute = parseAttribute(args.attribute);
         if ((typeof value !== "string" && value !== null) || (typeof value === "string" && value.length > 4000)) throw new Error("속성 값은 문자열 또는 제거를 뜻하는 null이어야 합니다.");

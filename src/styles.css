@@ -62,6 +62,9 @@
 .message__meta { margin: 0; color: var(--mp-text-muted); font-family: var(--font-mono); font-size: 0.67rem; }
 .pending-message { display: flex; align-items: center; gap: 10px; color: var(--mp-text-tertiary); font-size: 0.82rem; }
 .pending-message .mp-spinner { width: 16px; height: 16px; }
+.thinking-preview { display: grid; gap: 6px; min-width: 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--mp-bg-inset); box-shadow: inset 2px 0 0 var(--mp-accent-500); }
+.thinking-preview__label { color: var(--mp-text-muted); font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700; }
+.thinking-preview__content { max-height: 190px; margin: 0; overflow-y: auto; color: var(--mp-text-secondary); font-size: 0.78rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .composer { display: grid; gap: 10px; padding: 16px 20px 18px; background: var(--mp-bg-surface); }
 .composer .mp-textarea { min-height: 76px; max-height: 200px; resize: vertical; }
