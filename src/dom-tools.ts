@@ -127,17 +127,21 @@ export function inspectDom(command: DomCommand): DomReply {
       if (!Array.isArray(writes) || writes.length < 1 || writes.length > 20) throw new Error("본문 일괄 변경 범위가 올바르지 않습니다.");
       // Resolve and verify every target before changing any text node.
       const seenNodes = new Set<Text>();
-      const targets = writes.map((write) => {
-        if (typeof write.value !== "string" || write.value.length > 4000) throw new Error("본문 일괄 변경 값이 올바르지 않습니다.");
-        const element = uniqueElement(write.selector);
-        const node = selectedTextNode(element, write.textNodeIndex);
-        if (seenNodes.has(node)) throw new Error("같은 텍스트 노드를 두 번 변경할 수 없습니다.");
-        seenNodes.add(node);
-        const fingerprint = fingerprintOf(element);
-        if (command.action === "writeTextMany" && (write.fingerprint !== fingerprint || write.expectedText !== node.textContent)) {
-          throw new Error("승인 후 본문 텍스트가 바뀌었습니다. 다시 확인해 주세요.");
+      const targets = writes.map((write, index) => {
+        try {
+          if (typeof write.value !== "string" || write.value.length > 4000) throw new Error("본문 일괄 변경 값이 올바르지 않습니다.");
+          const element = uniqueElement(write.selector);
+          const node = selectedTextNode(element, write.textNodeIndex);
+          if (seenNodes.has(node)) throw new Error("같은 텍스트 노드를 두 번 변경할 수 없습니다.");
+          seenNodes.add(node);
+          const fingerprint = fingerprintOf(element);
+          if (command.action === "writeTextMany" && (write.fingerprint !== fingerprint || write.expectedText !== node.textContent)) {
+            throw new Error("승인 후 본문 텍스트가 바뀌었습니다. 다시 확인해 주세요.");
+          }
+          return { selector: write.selector, textNodeIndex: write.textNodeIndex, node, text: node.textContent || "", fingerprint };
+        } catch (error) {
+          throw new Error(`일괄 변경 ${index + 1}번 대상: ${error instanceof Error ? error.message : String(error)}`);
         }
-        return { selector: write.selector, textNodeIndex: write.textNodeIndex, node, text: node.textContent || "", fingerprint };
       });
       if (command.action === "readTextMany") {
         return { ok: true, url: pageUrl, result: { items: targets.map(({ selector, textNodeIndex, text, fingerprint }) => ({ selector, textNodeIndex, text, fingerprint })) } };
@@ -379,22 +383,25 @@ export function scrollAllTextTool(target: PageTarget, maxResultBytes = 48_000): 
   return {
     definition: { type: "function", function: {
       name: "scroll_all_text",
-      description: "Read visible text nodes from the connected page in document order, including text below the viewport. Use 1-based inclusive from/to (at most 50 entries), or afterSelector plus limit (at most 50) to read after that element's entire subtree. Each item includes its unique CSS selector and 0-based direct textNodeIndex for dom_write. nextIndex can be passed as from for the next batch. Does not physically scroll or load more content.",
+      description: "Read visible text nodes from the connected page in document order, including text below the viewport. Use 1-based inclusive from/to or from plus limit (at most 50 entries), or afterSelector plus limit (at most 50) to read after that element's entire subtree. Each item includes its unique CSS selector and 0-based direct textNodeIndex for dom_write. nextIndex can be passed as from for the next batch. Does not physically scroll or load more content.",
       parameters: { type: "object", properties: { from: { type: "integer" }, to: { type: "integer" }, afterSelector: { type: "string" }, limit: { type: "integer" } }, additionalProperties: false },
     } },
     execute: async (value, signal) => {
       const args = parseArgs(value, ["from", "to", "afterSelector", "limit"]);
       const rangeMode = args.from !== undefined || args.to !== undefined;
-      const anchorMode = args.afterSelector !== undefined || args.limit !== undefined;
+      const anchorMode = args.afterSelector !== undefined;
       if (rangeMode && anchorMode) throw new Error("텍스트 범위와 CSS 선택자 뒤 읽기 중 한 방식만 지정해 주세요.");
+      if (!anchorMode && args.to !== undefined && args.limit !== undefined) throw new Error("끝 번호와 읽을 개수 중 하나만 지정해 주세요.");
+      if (args.limit !== undefined && (!Number.isSafeInteger(args.limit) || Number(args.limit) < 1 || Number(args.limit) > 50)) throw new Error("읽을 텍스트 개수는 1~50이어야 합니다.");
       if (anchorMode) {
         const afterSelector = parseSelector(args.afterSelector);
-        const limit = args.limit;
-        if (!Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 50) throw new Error("읽을 텍스트 개수는 1~50이어야 합니다.");
-        return JSON.stringify(await runDom(target, { action: "scrollAllText", selector: "body", afterSelector, limit: Number(limit), maxResultBytes }, signal));
+        if (args.limit === undefined) throw new Error("읽을 텍스트 개수는 1~50이어야 합니다.");
+        return JSON.stringify(await runDom(target, { action: "scrollAllText", selector: "body", afterSelector, limit: Number(args.limit), maxResultBytes }, signal));
       }
-      const from = rangeMode ? args.from : 1;
-      const to = rangeMode ? args.to : 30;
+      const from = args.from === undefined ? 1 : args.from;
+      const to = args.to === undefined && args.limit !== undefined
+        ? Number(from) + Number(args.limit) - 1
+        : (rangeMode ? args.to : 30);
       if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || Number(from) < 1 || Number(to) < Number(from) || Number(to) - Number(from) >= 50) throw new Error("텍스트 범위는 1부터 시작하는 최대 50개의 연속 번호여야 합니다.");
       return JSON.stringify(await runDom(target, { action: "scrollAllText", selector: "body", from: Number(from), to: Number(to), maxResultBytes }, signal));
     },

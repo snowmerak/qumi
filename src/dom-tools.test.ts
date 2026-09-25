@@ -77,6 +77,10 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
     HTMLTextAreaElement: class {},
     HTMLSelectElement: class {},
     HTMLElement: FakeElement,
+    chrome: {
+      tabs: { query: async () => [{ id: 1, url: "https://example.com/" }] },
+      scripting: { executeScript: async ({ func, args }: { func: typeof inspectDom; args: [Parameters<typeof inspectDom>[0]] }) => [{ result: func(...args) }] },
+    },
   };
   const previous = Object.fromEntries(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, value });
@@ -93,6 +97,8 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
       { index: 2, selector: `${buttonSelector} > strong:nth-of-type(1)`, textNodeIndex: 0, text: " now", truncated: false },
       { index: 3, selector: "body > main:nth-of-type(1) > p:nth-of-type(1)", textNodeIndex: 0, text: "Third", truncated: false },
     ]);
+    const fromLimit = JSON.parse(await scrollAllTextTool({ tabId: 1, windowId: 1, url: "https://example.com/", title: "Example" }).execute({ from: 2, limit: 2 }, new AbortController().signal));
+    assert.deepEqual(fromLimit.items, range?.items);
     const after = inspectDom({ action: "scrollAllText", selector: "body", afterSelector: buttonSelector, limit: 2 }).result;
     assert.equal(after?.from, 3);
     assert.deepEqual(after?.items, [
@@ -149,6 +155,9 @@ it("builds unique CSS paths and applies reviewed writes and clicks", async () =>
     assert.match(inspectDom({ action: "writeTextMany", selector: "body", writes: reviewedWrites }).error || "", /본문 텍스트가 바뀌었습니다/);
     assert.equal((paragraph.childNodes[0] as FakeText).textContent, "Third");
     (paragraph.childNodes[1] as FakeText).textContent = " fourth";
+    const missing = inspectDom({ action: "readTextMany", selector: "body", writes: [writes[0], { ...writes[1], selector: "body > missing" }] });
+    assert.match(missing.error || "", /2번 대상: CSS 선택자가 보이는 요소 0개/);
+    assert.equal((paragraph.childNodes[0] as FakeText).textContent, "Third");
     assert.equal(inspectDom({ action: "writeTextMany", selector: "body", writes: reviewedWrites }).result?.written, 2);
     assert.equal((paragraph.childNodes[0] as FakeText).textContent, "세 번째");
     assert.equal((paragraph.childNodes[1] as FakeText).textContent, " 네 번째");
@@ -166,5 +175,7 @@ it("validates scroll_all_text modes and batch bounds", async () => {
   await assert.rejects(tool.execute({ from: 2, to: 1 }, signal), /텍스트 범위/);
   await assert.rejects(tool.execute({ from: 1, to: 51 }, signal), /텍스트 범위/);
   await assert.rejects(tool.execute({ from: 1, to: 2, afterSelector: "body", limit: 2 }, signal), /한 방식만/);
+  await assert.rejects(tool.execute({ from: 1, to: 2, limit: 2 }, signal), /끝 번호와 읽을 개수/);
+  await assert.rejects(tool.execute({ limit: "2" }, signal), /1~50/);
   await assert.rejects(tool.execute({ afterSelector: "body", limit: 51 }, signal), /1~50/);
 });
