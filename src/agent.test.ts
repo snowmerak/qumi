@@ -36,11 +36,11 @@ describe("Qumi agent loop", () => {
     };
     const result = await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "Translate", tools: [tool], signal: new AbortController().signal, onTrace: (event) => trace.push(event) });
     assert.equal(requests.length, 5);
-    assert.deepEqual(requests[0].tools?.map((entry) => entry.function.name), ["lookup", "task_start", "task_complete"]);
+    assert.deepEqual(requests[0].tools?.map((entry) => entry.function.name), ["lookup", "wait", "task_start", "task_complete"]);
     assert.match(requests[3].messages.at(-1)?.content ?? "", /not complete until you call task_complete/);
     assert.equal(requests[4].conversation_id, "cache_4");
     assert.equal(requests[4].tool_choice, "none");
-    assert.deepEqual(requests[4].tools?.map((entry) => entry.function.name), ["lookup", "task_start", "task_complete"]);
+    assert.deepEqual(requests[4].tools?.map((entry) => entry.function.name), ["lookup", "wait", "task_start", "task_complete"]);
     assert.match(requests[4].messages.at(-1)?.content ?? "", /host accepted this terminal result/);
     assert.match(result.content, /^Translated the article\n\n검증:/);
     assert.equal(result.content.includes("Acknowledged"), false);
@@ -142,6 +142,21 @@ describe("Qumi agent loop", () => {
     assert.deepEqual(trace.map((event) => event.event), ["turn_started", "model_requested", "model_completed", "tool_started", "tool_completed", "model_requested", "model_completed", "turn_completed"]);
     assert.deepEqual(trace.find((event) => event.event === "tool_completed")?.argumentKeys, ["query"]);
     assert.equal(JSON.stringify(trace).includes("Qumi"), false);
+  });
+
+  it("executes wait in an agent turn without requiring a connected page", async () => {
+    const requests: Array<{ messages: ModelMessage[] }> = [];
+    globalThis.fetch = async (_, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return requests.length === 1
+        ? response({ role: "assistant", content: "", tool_calls: [{ id: "pause", type: "function", function: { name: "wait", arguments: '{"time":0.01}' } }] })
+        : response({ role: "assistant", content: "Ready." });
+    };
+    const result = await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "Wait briefly", signal: new AbortController().signal });
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1].messages.at(-1)?.role, "tool");
+    assert.match(requests[1].messages.at(-1)?.content ?? "", /elapsedSeconds/);
+    assert.equal(result.content, "Ready.");
   });
 
   it("records a safe failure reason without logging the provider error text", async () => {

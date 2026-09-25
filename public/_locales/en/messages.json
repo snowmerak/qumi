@@ -1,0 +1,5 @@
+{
+  "extensionName": { "message": "Qumi" },
+  "extensionDescription": { "message": "A browser side panel assistant connected to Q Gateway" },
+  "actionTitle": { "message": "Open Qumi" }
+}

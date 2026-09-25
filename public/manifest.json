@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Qumi",
-  "description": "Q Gateway에 연결하는 Chrome 사이드 패널",
+  "name": "__MSG_extensionName__",
+  "description": "__MSG_extensionDescription__",
+  "default_locale": "en",
   "version": "0.1.0",
   "minimum_chrome_version": "116",
   "icons": {
@@ -11,7 +12,7 @@
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_title": "Qumi 열기",
+    "default_title": "__MSG_actionTitle__",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png"

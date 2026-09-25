@@ -79,6 +79,8 @@ const messages = {
   cancelSelection: { en: "Cancel selection", ko: "선택 취소", ja: "選択をキャンセル", zh: "取消选择" },
   addRegion: { en: "+ Select region", ko: "+ 영역 선택", ja: "+ 範囲を選択", zh: "+ 选择区域" },
   selectingRegionHint: { en: "Drag a rectangle on the page · Esc to cancel", ko: "페이지에서 사각형을 드래그하세요 · Esc로 취소", ja: "ページ上で矩形をドラッグ · Esc でキャンセル", zh: "在页面上拖出矩形 · 按 Esc 取消" },
+  pickerHint: { en: "Drag to select a region · Esc to cancel", ko: "드래그로 영역 선택 · Esc로 취소", ja: "ドラッグして範囲を選択 · Esc でキャンセル", zh: "拖动以选择区域 · 按 Esc 取消" },
+  pickerTooSmall: { en: "Drag a larger region · Esc to cancel", ko: "조금 더 넓게 드래그해 주세요 · Esc로 취소", ja: "もう少し広い範囲を選択してください · Esc でキャンセル", zh: "请拖出更大的区域 · 按 Esc 取消" },
   selectRegionHint: { en: "Select a region on the page after pressing the button", ko: "버튼을 누른 뒤 페이지의 원하는 영역을 드래그", ja: "ボタンを押してページ上の範囲をドラッグ", zh: "点击按钮后在页面上拖选区域" },
   askQ: { en: "Ask Q", ko: "Q에게 물어보기", ja: "Q に質問", zh: "向 Q 提问" },
   localConnection: { en: "Q Gateway · Local connection", ko: "Q Gateway · 로컬 연결", ja: "Q Gateway · ローカル接続", zh: "Q Gateway · 本地连接" },
@@ -89,6 +91,27 @@ const messages = {
   openWebPage: { en: "Open a regular HTTP(S) page before connecting.", ko: "일반 HTTP(S) 웹페이지를 연 뒤 다시 연결해 주세요.", ja: "通常の HTTP(S) ページを開いてから接続してください。", zh: "请打开普通 HTTP(S) 网页后再连接。" },
   waitForPageLoad: { en: "Wait for the page to finish loading before connecting.", ko: "페이지 로딩이 끝난 뒤 연결해 주세요.", ja: "ページの読み込みが終わってから接続してください。", zh: "请等待页面加载完成后再连接。" },
   pageConnectFailed: { en: "Could not connect to this page.", ko: "페이지에 연결하지 못했습니다.", ja: "このページに接続できませんでした。", zh: "无法连接到此页面。" },
+  pageChanged: { en: "The page changed. Check the new page connection and try again.", ko: "페이지가 바뀌었습니다. 새 페이지 연결을 확인한 뒤 다시 요청해 주세요.", ja: "ページが変わりました。新しいページの接続を確認して再試行してください。", zh: "页面已更改。请检查新页面的连接后重试。" },
+  pageChangedSelection: { en: "The page changed. Check the new page connection and try again.", ko: "페이지가 바뀌었습니다. 새 페이지 연결을 확인한 뒤 다시 시도해 주세요.", ja: "ページが変わりました。新しいページの接続を確認して再試行してください。", zh: "页面已更改。请检查新页面的连接后重试。" },
+  noPageAccess: { en: "This page cannot be connected. Try a regular HTTP(S) page.", ko: "이 페이지는 연결할 수 없습니다. 일반 HTTP(S) 웹페이지에서 다시 시도해 주세요.", ja: "このページには接続できません。通常の HTTP(S) ページで再試行してください。", zh: "无法连接此页面。请在普通 HTTP(S) 网页上重试。" },
+  extensionRequired: { en: "Page connections require the installed Chrome extension.", ko: "페이지 연결은 설치된 Chrome 확장에서 사용할 수 있습니다.", ja: "ページ接続にはインストール済みの Chrome 拡張機能が必要です。", zh: "页面连接需要安装 Chrome 扩展。" },
+  siteAccessDenied: { en: "Site access was denied. Check Qumi's site access settings in your browser.", ko: "사이트 접근 권한이 거부되었습니다. 브라우저의 Qumi 사이트 접근 설정을 확인해 주세요.", ja: "サイトへのアクセスが拒否されました。ブラウザーの Qumi サイトアクセス設定を確認してください。", zh: "网站访问权限被拒绝。请检查浏览器中的 Qumi 网站访问设置。" },
+  regionCaptureFailed: { en: "Could not select a page region. Check page access permissions.", ko: "페이지에서 영역을 선택하지 못했습니다. 페이지 연결 권한을 확인해 주세요.", ja: "ページ上の範囲を選択できませんでした。ページへのアクセス権を確認してください。", zh: "无法选择页面区域。请检查页面访问权限。" },
+  gatewayUrlInvalid: { en: "Check the Gateway URL.", ko: "Gateway URL을 확인해 주세요.", ja: "Gateway の URL を確認してください。", zh: "请检查 Gateway URL。" },
+  gatewayUrlRequired: { en: "Enter a local Q Gateway URL, for example http://127.0.0.1:8080/v1.", ko: "로컬 Q Gateway 주소를 입력해 주세요. 예: http://127.0.0.1:8080/v1", ja: "ローカル Q Gateway の URL を入力してください。例: http://127.0.0.1:8080/v1", zh: "请输入本地 Q Gateway 地址，例如 http://127.0.0.1:8080/v1。" },
+  gatewayModelFormat: { en: "The Gateway model list has an invalid format.", ko: "Gateway 모델 목록 형식이 올바르지 않습니다.", ja: "Gateway のモデル一覧の形式が正しくありません。", zh: "Gateway 模型列表格式无效。" },
+  gatewayEmptyResponse: { en: "The Gateway returned an empty response.", ko: "Gateway가 빈 응답을 반환했습니다.", ja: "Gateway から空の応答が返されました。", zh: "Gateway 返回了空响应。" },
+  gatewayStreamUnreadable: { en: "Could not read the Gateway stream.", ko: "Gateway 스트림을 읽을 수 없습니다.", ja: "Gateway のストリームを読み取れません。", zh: "无法读取 Gateway 流。" },
+  gatewayToolFormat: { en: "The Gateway tool call has an invalid format.", ko: "Gateway 도구 호출 형식이 올바르지 않습니다.", ja: "Gateway のツール呼び出し形式が正しくありません。", zh: "Gateway 工具调用格式无效。" },
+  gatewayResponsesFormat: { en: "The Gateway Responses output has an invalid format.", ko: "Gateway Responses 출력 형식이 올바르지 않습니다.", ja: "Gateway Responses の出力形式が正しくありません。", zh: "Gateway Responses 输出格式无效。" },
+  gatewayResponsesStreamIncomplete: { en: "The Gateway Responses stream ended without a completion event.", ko: "Gateway Responses 스트림이 완료 이벤트 없이 끝났습니다.", ja: "Gateway Responses ストリームが完了イベントなしで終了しました。", zh: "Gateway Responses 流结束时没有完成事件。" },
+  gatewayResponsesTextMissing: { en: "The Gateway Responses completion did not include streamed text.", ko: "Gateway Responses 완료 응답에 스트리밍 텍스트가 없습니다.", ja: "Gateway Responses の完了応答にストリーミングテキストがありません。", zh: "Gateway Responses 完成响应中没有流式文本。" },
+  gatewayTextMissing: { en: "No text was found in the Gateway response.", ko: "Gateway 응답에서 텍스트를 찾지 못했습니다.", ja: "Gateway の応答にテキストがありません。", zh: "Gateway 响应中没有文本。" },
+  codexResponsesUnsupported: { en: "The current Q Gateway Codex Responses adapter cannot continue after tool results. Select Chat Completions.", ko: "현재 Q Gateway의 Codex Responses 어댑터는 도구 결과를 이어받지 못합니다. Chat Completions를 선택해 주세요.", ja: "現在の Q Gateway Codex Responses アダプターはツール結果を引き継げません。Chat Completions を選択してください。", zh: "当前 Q Gateway Codex Responses 适配器无法继续处理工具结果。请选择 Chat Completions。" },
+  gatewayHttpError: { en: "Gateway request failed ({status}).", ko: "Gateway 요청에 실패했습니다. ({status})", ja: "Gateway のリクエストに失敗しました（{status}）。", zh: "Gateway 请求失败（{status}）。" },
+  gatewayResponsesHttpError: { en: "Gateway Responses request failed ({status}).", ko: "Gateway Responses 요청에 실패했습니다. ({status})", ja: "Gateway Responses のリクエストに失敗しました（{status}）。", zh: "Gateway Responses 请求失败（{status}）。" },
+  gatewayNonJsonError: { en: "Gateway did not return JSON ({status}).", ko: "Gateway가 JSON 응답을 반환하지 않았습니다. ({status})", ja: "Gateway が JSON を返しませんでした（{status}）。", zh: "Gateway 未返回 JSON（{status}）。" },
+  modelRequired: { en: "Select a model.", ko: "모델을 선택해 주세요.", ja: "モデルを選択してください。", zh: "请选择模型。" },
   tooManyRegions: { en: "You can attach up to 5 regions per request.", ko: "선택 영역은 한 요청에 최대 5개까지 첨부할 수 있습니다.", ja: "1 回のリクエストに添付できる範囲は最大 5 件です。", zh: "每次请求最多可附加 5 个区域。" },
   regionReadFailed: { en: "Could not read the selected region.", ko: "선택 영역을 읽지 못했습니다.", ja: "選択範囲を読み取れませんでした。", zh: "无法读取选定区域。" },
   responding: { en: "Responding…", ko: "응답 중…", ja: "応答中…", zh: "正在回答…" },
@@ -149,8 +172,46 @@ export function localizeApprovalTitle(locale: Locale, title: string): string {
   return key ? translate(locale, key) : title;
 }
 
+const approvalDetailLabels: Record<string, Record<Locale, string>> = {
+  "도구": { en: "Tool", ko: "도구", ja: "ツール", zh: "工具" },
+  "인수": { en: "Arguments", ko: "인수", ja: "引数", zh: "参数" },
+  "텍스트 노드": { en: "Text node", ko: "텍스트 노드", ja: "テキストノード", zh: "文本节点" },
+  "기존 텍스트": { en: "Previous text", ko: "기존 텍스트", ja: "変更前のテキスト", zh: "原文本" },
+  "새 텍스트": { en: "New text", ko: "새 텍스트", ja: "新しいテキスト", zh: "新文本" },
+  "속성": { en: "Attribute", ko: "속성", ja: "属性", zh: "属性" },
+  "기존 값": { en: "Previous value", ko: "기존 값", ja: "変更前の値", zh: "原值" },
+  "새 값": { en: "New value", ko: "새 값", ja: "新しい値", zh: "新值" },
+  "기존": { en: "Previous", ko: "기존", ja: "変更前", zh: "原内容" },
+  "키": { en: "Key", ko: "키", ja: "キー", zh: "按键" },
+};
+
+export function localizeApprovalDetail(locale: Locale, detail: string): string {
+  if (locale === "ko") return detail;
+  const nodeCount = { en: "text nodes", ja: "件のテキストノード", zh: "个文本节点" }[locale];
+  const textCount = { en: "Text", ja: "テキスト", zh: "文本" }[locale];
+  const characters = { en: "characters", ja: "文字", zh: "字" }[locale];
+  return detail.split("\n").map((line) => {
+    const translatedLine = line.replace(" (속성 제거)", { en: " (remove attribute)", ja: "（属性を削除）", zh: "（移除属性）" }[locale]);
+    const label = /^([^:]+): /.exec(translatedLine)?.[1];
+    if (label && approvalDetailLabels[label]) return `${approvalDetailLabels[label][locale]}: ${translatedLine.slice(label.length + 2)}`;
+    if (/^\d+개 텍스트 노드$/.test(line)) return line.replace(/^(\d+)개 텍스트 노드$/, locale === "en" ? `$1 ${nodeCount}` : `$1${nodeCount}`);
+    if (/^텍스트 \d+자: /.test(line)) return line.replace(/^텍스트 (\d+)자: /, locale === "en" ? `${textCount} $1 ${characters}: ` : `${textCount} $1${characters}: `);
+    return translatedLine;
+  }).join("\n");
+}
+
 export function localizeKnownError(locale: Locale, message: string): string {
-  const keys: MessageKey[] = ["readSettingsFailed", "saveConversationFailed", "openWebPage", "waitForPageLoad", "pageConnectFailed", "tooManyRegions", "regionReadFailed", "requestCancelled", "responseFailed", "logSaveFailed", "gatewayConnectFailed", "contextLengthMissing", "noAvailableModels"];
+  const keys: MessageKey[] = ["readSettingsFailed", "saveConversationFailed", "openWebPage", "waitForPageLoad", "pageConnectFailed", "pageChanged", "pageChangedSelection", "noPageAccess", "extensionRequired", "siteAccessDenied", "regionCaptureFailed", "gatewayUrlInvalid", "gatewayUrlRequired", "gatewayModelFormat", "gatewayEmptyResponse", "gatewayStreamUnreadable", "gatewayToolFormat", "gatewayResponsesFormat", "gatewayResponsesStreamIncomplete", "gatewayResponsesTextMissing", "gatewayTextMissing", "codexResponsesUnsupported", "modelRequired", "tooManyRegions", "regionReadFailed", "requestCancelled", "responseFailed", "logSaveFailed", "gatewayConnectFailed", "contextLengthMissing", "noAvailableModels"];
   const key = keys.find((candidate) => messages[candidate].ko === message);
-  return key ? translate(locale, key) : message;
+  if (key) return translate(locale, key);
+  const statusPatterns: [RegExp, MessageKey][] = [
+    [/^Gateway 요청에 실패했습니다\. \((\d+)\)$/, "gatewayHttpError"],
+    [/^Gateway Responses 요청에 실패했습니다\. \((\d+)\)$/, "gatewayResponsesHttpError"],
+    [/^Gateway가 JSON 응답을 반환하지 않았습니다\. \((\d+)\)$/, "gatewayNonJsonError"],
+  ];
+  for (const [pattern, statusKey] of statusPatterns) {
+    const match = pattern.exec(message);
+    if (match) return translate(locale, statusKey, { status: match[1] });
+  }
+  return message;
 }

@@ -4,7 +4,7 @@ import type { PageSelection } from "./page-selection.ts";
 const pageChanged = "페이지가 바뀌었습니다. 새 페이지 연결을 확인한 뒤 다시 시도해 주세요.";
 
 // Chrome serializes this function for executeScript, so its helpers stay inside it.
-export function regionPickerInPage(action: "start" | "cancel"): Promise<PageSelection | null> | null {
+export function regionPickerInPage(action: "start" | "cancel", hints: { start: string; tooSmall: string } = { start: "드래그로 영역 선택 · Esc로 취소", tooSmall: "조금 더 넓게 드래그해 주세요 · Esc로 취소" }): Promise<PageSelection | null> | null {
   type PickerWindow = Window & { __qumiRegionPickerCancelV1?: () => void };
   const pageWindow = window as PickerWindow;
   if (action === "cancel") { pageWindow.__qumiRegionPickerCancelV1?.(); return null; }
@@ -107,10 +107,11 @@ export function regionPickerInPage(action: "start" | "cancel"): Promise<PageSele
       .surface { position: fixed; inset: 0; cursor: crosshair; background: rgba(16, 24, 40, .12); touch-action: none; user-select: none; }
       .box { position: absolute; display: none; border: 2px solid #79a8f8; background: rgba(79, 142, 240, .22); box-shadow: 0 0 0 1px #172239; box-sizing: border-box; pointer-events: none; }
       .hint { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); padding: 9px 13px; border-radius: 8px; background: #1b2230; color: #fff; font: 13px system-ui, sans-serif; white-space: nowrap; pointer-events: none; box-shadow: 0 4px 16px #0005; }
-    </style><div class="surface"><div class="box"></div><div class="hint">드래그로 영역 선택 · Esc로 취소</div></div>`;
+    </style><div class="surface"><div class="box"></div><div class="hint"></div></div>`;
     const surface = shadow.querySelector<HTMLElement>(".surface")!;
     const box = shadow.querySelector<HTMLElement>(".box")!;
     const hint = shadow.querySelector<HTMLElement>(".hint")!;
+    hint.textContent = hints.start;
     let start: { x: number; y: number; pointerId: number } | null = null;
     let finished = false;
     const timeout = window.setTimeout(() => finish(null), 2 * 60_000);
@@ -167,7 +168,7 @@ export function regionPickerInPage(action: "start" | "cancel"): Promise<PageSele
       if (bounds.right - bounds.left < 8 || bounds.bottom - bounds.top < 8) {
         start = null;
         box.style.display = "none";
-        hint.textContent = "조금 더 넓게 드래그해 주세요 · Esc로 취소";
+        hint.textContent = hints.tooSmall;
         return;
       }
       finish(bounds);
@@ -185,11 +186,11 @@ async function assertCurrentTarget(target: PageTarget): Promise<void> {
   if (!active || active.id !== target.tabId || active.url !== target.url) throw new Error(pageChanged);
 }
 
-export async function capturePageRegion(target: PageTarget): Promise<PageSelection | null> {
+export async function capturePageRegion(target: PageTarget, hints?: { start: string; tooSmall: string }): Promise<PageSelection | null> {
   await assertCurrentTarget(target);
   let captured: PageSelection | null | undefined;
   try {
-    const [injection] = await chrome.scripting.executeScript({ target: { tabId: target.tabId }, func: regionPickerInPage, args: ["start"] });
+    const [injection] = await chrome.scripting.executeScript({ target: { tabId: target.tabId }, func: regionPickerInPage, args: ["start", hints ?? { start: "드래그로 영역 선택 · Esc로 취소", tooSmall: "조금 더 넓게 드래그해 주세요 · Esc로 취소" }] });
     captured = injection?.result;
   } catch {
     throw new Error("페이지에서 영역을 선택하지 못했습니다. 페이지 연결 권한을 확인해 주세요.");

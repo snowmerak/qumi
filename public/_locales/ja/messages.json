@@ -1,0 +1,5 @@
+{
+  "extensionName": { "message": "Qumi" },
+  "extensionDescription": { "message": "Q Gateway に接続するブラウザーのサイドパネルアシスタント" },
+  "actionTitle": { "message": "Qumi を開く" }
+}

@@ -1,0 +1,5 @@
+{
+  "extensionName": { "message": "Qumi" },
+  "extensionDescription": { "message": "连接 Q Gateway 的浏览器侧边栏助手" },
+  "actionTitle": { "message": "打开 Qumi" }
+}

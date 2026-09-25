@@ -1,0 +1,5 @@
+{
+  "extensionName": { "message": "Qumi" },
+  "extensionDescription": { "message": "Q Gateway에 연결하는 브라우저 사이드 패널 도우미" },
+  "actionTitle": { "message": "Qumi 열기" }
+}

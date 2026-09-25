@@ -13,7 +13,7 @@ import { emptyState, loadState, saveState, type AppSettings } from "./storage";
 import { canReadPages, capturePageTarget, getActiveBrowserTab, getActivePageCandidate, hasPageAccess, requestPageAccess, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
 import { promptWithSelections, type PageSelection } from "./page-selection";
 import { cancelPageRegion, capturePageRegion } from "./page-region";
-import { formatNumber, languagePreferenceFrom, localizeApprovalTitle, localizeKnownError, resolveLocale, translate, type LanguagePreference, type Locale, type MessageKey } from "./i18n";
+import { formatNumber, languagePreferenceFrom, localizeApprovalDetail, localizeApprovalTitle, localizeKnownError, resolveLocale, translate, type LanguagePreference, type Locale, type MessageKey } from "./i18n";
 
 type Connection = "checking" | "connected" | "disconnected";
 type PendingAction = { title: string; detail: string; decide: (approved: boolean) => void };
@@ -382,7 +382,7 @@ export function App() {
     setSelectionLoading(true);
     setError("");
     try {
-      const selection = await capturePageRegion(pageTarget);
+      const selection = await capturePageRegion(pageTarget, { start: tr("pickerHint"), tooSmall: tr("pickerTooSmall") });
       if (selection) setSelectedRegions((current) => [...current, selection]);
     } catch (cause) {
       setError(cause instanceof Error ? localizeKnownError(locale, cause.message) : tr("regionReadFailed"));
@@ -405,7 +405,7 @@ export function App() {
         resolve(approved);
       };
       signal.addEventListener("abort", onAbort, { once: true });
-      setPendingAction({ title: localizeApprovalTitle(locale, title), detail, decide });
+      setPendingAction({ title: localizeApprovalTitle(locale, title), detail: localizeApprovalDetail(locale, detail), decide });
     });
   }
 
@@ -581,18 +581,18 @@ export function App() {
           </main>
 
           <form className="composer" onSubmit={(event) => void send(event)}>
-            {pendingAction && <div className="navigation-request" role="dialog" aria-label="브라우저 작업 확인">
+            {pendingAction && <div className="navigation-request" role="dialog" aria-label={tr("browserActionConfirmation")}>
               <strong>{pendingAction.title}</strong>
               <span>{pendingAction.detail}</span>
-              <div><button className="mp-button mp-button--ghost" type="button" onClick={() => pendingAction.decide(false)}>취소</button><button className="mp-button mp-button--primary" type="button" onClick={() => pendingAction.decide(true)}>실행</button></div>
+              <div><button className="mp-button mp-button--ghost" type="button" onClick={() => pendingAction.decide(false)}>{tr("cancel")}</button><button className="mp-button mp-button--primary" type="button" onClick={() => pendingAction.decide(true)}>{tr("run")}</button></div>
             </div>}
             {error && <div className="composer__error" role="alert">{error}</div>}
-            {connection === "connected" && !contextWindow && <div className="composer__error" role="status">설정에서 이 모델의 문맥 길이를 입력해 주세요.</div>}
-            {pageTarget && <div className="composer__selection-actions"><button className="mp-button mp-button--secondary" type="button" onClick={() => void attachSelection()} disabled={sending || (!selectionLoading && selectedRegions.length >= 5)}>{selectionLoading ? "선택 취소" : "+ 영역 선택"}</button><span>{selectionLoading ? "페이지에서 사각형을 드래그하세요 · Esc로 취소" : "버튼을 누른 뒤 페이지의 원하는 영역을 드래그"}</span></div>}
-            {!sending && <SelectionNotes selections={selectedRegions} onRemove={(index) => setSelectedRegions((current) => current.filter((_, itemIndex) => itemIndex !== index))} />}
-            <label className="sr-only" htmlFor="chat-input">Q에게 물어보기</label>
-            <textarea id="chat-input" className="mp-textarea" rows={3} placeholder="Q에게 물어보기" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} disabled={!canSend} />
-            <div className="composer__footer"><span>Q Gateway · 로컬 연결</span>{sending ? <button className="mp-button mp-button--secondary" type="button" onClick={() => requestController.current?.abort()}>중단</button> : <button className="mp-button mp-button--primary" type="submit" disabled={!canSend || !draft.trim()}><Icon name="send" />보내기</button>}</div>
+            {connection === "connected" && !contextWindow && <div className="composer__error" role="status">{tr("contextLengthRequired")}</div>}
+            {pageTarget && <div className="composer__selection-actions"><button className="mp-button mp-button--secondary" type="button" onClick={() => void attachSelection()} disabled={sending || (!selectionLoading && selectedRegions.length >= 5)}>{tr(selectionLoading ? "cancelSelection" : "addRegion")}</button><span>{tr(selectionLoading ? "selectingRegionHint" : "selectRegionHint")}</span></div>}
+            {!sending && <SelectionNotes selections={selectedRegions} locale={locale} onRemove={(index) => setSelectedRegions((current) => current.filter((_, itemIndex) => itemIndex !== index))} />}
+            <label className="sr-only" htmlFor="chat-input">{tr("askQ")}</label>
+            <textarea id="chat-input" className="mp-textarea" rows={3} placeholder={tr("askQ")} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} disabled={!canSend} />
+            <div className="composer__footer"><span>{tr("localConnection")}</span>{sending ? <button className="mp-button mp-button--secondary" type="button" onClick={() => requestController.current?.abort()}>{tr("stop")}</button> : <button className="mp-button mp-button--primary" type="submit" disabled={!canSend || !draft.trim()}><Icon name="send" />{tr("send")}</button>}</div>
           </form>
         </>
       )}
