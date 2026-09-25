@@ -11,6 +11,7 @@ import { clearExecutionLog, createExecutionLog, readExecutionLog } from "./execu
 import { emptyState, loadState, saveState, type AppSettings } from "./storage";
 import { canReadPages, capturePageTarget, getActivePageCandidate, hasPageAccess, requestPageAccess, listOpenTabsTool, navigationTool, pageContextTool, switchTabTool, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
 import { domClickTool, domListTool, domReadTool, domWriteManyTool, domWriteTool, scrollAllTextTool } from "./dom-tools";
+import { sendKeyTool, sendKeysTool } from "./keyboard-tools";
 import { promptWithSelections, type PageSelection } from "./page-selection";
 import { cancelPageRegion, capturePageRegion } from "./page-region";
 
@@ -460,6 +461,7 @@ export function App() {
           withReadApproval(domReadTool(pageTarget), pageTarget, settings.approvalPolicy, approveAction),
           withReadApproval(scrollAllTextTool(pageTarget, Math.max(1_024, Math.min(48_000, contextWindow - 512))), pageTarget, settings.approvalPolicy, approveAction),
           domWriteTool(pageTarget, approveChange), domWriteManyTool(pageTarget, approveChange), domClickTool(pageTarget, approveChange),
+          sendKeyTool(pageTarget, approveChange), sendKeysTool(pageTarget, approveChange),
           withReadApproval(listOpenTabsTool(pageTarget), pageTarget, settings.approvalPolicy, approveAction),
           navigationTool(pageTarget, approveNavigation, () => setPageTarget(null)),
           switchTabTool(pageTarget, approveNavigation, () => setPageTarget(null)),

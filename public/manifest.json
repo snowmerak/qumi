@@ -23,6 +23,6 @@
   "side_panel": {
     "default_path": "sidepanel.html"
   },
-  "permissions": ["sidePanel", "storage", "scripting", "tabs"],
+  "permissions": ["sidePanel", "storage", "scripting", "tabs", "debugger"],
   "host_permissions": ["http://*/*", "https://*/*"]
 }
