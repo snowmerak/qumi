@@ -15,7 +15,7 @@ export interface SavedState {
 const storageKey = "qumiState";
 
 export const emptyState: SavedState = {
-  settings: { baseUrl: "", apiKey: "", model: "", contextWindowOverride: 0, approvalPolicy: "changes" },
+  settings: { baseUrl: "", apiKey: "", model: "", apiMode: "chat_completions", contextWindowOverride: 0, approvalPolicy: "changes" },
   messages: [],
   agent: emptyAgentState(),
 };
@@ -50,6 +50,7 @@ export async function loadState(): Promise<SavedState> {
       baseUrl: typeof saved.settings?.baseUrl === "string" ? saved.settings.baseUrl : "",
       apiKey: typeof saved.settings?.apiKey === "string" ? saved.settings.apiKey : "",
       model: typeof saved.settings?.model === "string" ? saved.settings.model : "",
+      apiMode: saved.settings?.apiMode === "responses" ? "responses" : "chat_completions",
       contextWindowOverride: typeof saved.settings?.contextWindowOverride === "number" && Number.isSafeInteger(saved.settings.contextWindowOverride) && saved.settings.contextWindowOverride > 0
         ? saved.settings.contextWindowOverride : 0,
       approvalPolicy: approvalPolicyFrom(saved.settings?.approvalPolicy),

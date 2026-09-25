@@ -7,7 +7,7 @@ Q Gateway에 연결하는 Chrome Manifest V3 사이드 패널 확장입니다. G
 1. Q에서 `q gateway start`를 실행하고 출력된 `http://127.0.0.1:<port>/v1` 주소를 확인합니다. API 키를 설정했다면 키도 준비합니다.
 2. 이 디렉터리에서 `pnpm install`과 `pnpm build`를 실행합니다.
 3. Chrome의 `chrome://extensions`에서 개발자 모드를 켜고 `dist` 폴더를 압축 해제된 확장 프로그램으로 로드합니다.
-4. 웹페이지에서 Qumi 아이콘을 클릭해 사이드 패널을 열고 Gateway 주소, API 키(필요할 때만), 모델을 설정합니다. 모델 목록에 문맥 길이가 없으면 토큰 수를 직접 입력합니다.
+4. 웹페이지에서 Qumi 아이콘을 클릭해 사이드 패널을 열고 Gateway 주소, API 키(필요할 때만), 모델과 모델 API를 설정합니다. 모델 목록에 문맥 길이가 없으면 토큰 수를 직접 입력합니다.
 5. 일반 HTTP(S) 웹페이지를 열면 Qumi가 페이지 로드 완료 후 연결을 확인합니다. 이미 사이트 접근 권한을 허용했다면 탭 전환이나 페이지 이동 뒤에도 자동 연결됩니다. 처음 방문한 사이트에서만 `현재 페이지`의 **연결**을 눌러 Chrome 권한 요청을 승인합니다. 이 권한은 Chrome에 사이트 단위로 저장되며 확장 관리에서 나중에 철회할 수 있습니다. 페이지 질문을 하면 모델이 URL·제목·본문 읽기 도구를 호출할 수 있습니다. `dom_list`는 `body`부터 시작해 보이는 자식 요소와 고유 CSS 선택자를 반환하고, `dom_read`는 선택한 요소의 내용·직접 자식 텍스트 노드·속성을 읽습니다. `scroll_all_text`는 페이지의 보이는 텍스트 노드를 문서 순서대로 한 번에 읽습니다. `dom_write`는 `textNodeIndex`로 본문 문구를 바꾸고, 입력값과 허용된 HTML 속성도 변경합니다. 속성 제거에는 `value: null`을 사용합니다. URL 이동, 새 탭 열기, 기존 탭 전환도 지원합니다.
 
 확장 코드를 다시 빌드한 뒤에는 `chrome://extensions`에서 Qumi의 **새로고침**을 누르고 사이드 패널을 다시 여세요. 특히 manifest 권한 변경은 확장 새로고침 전에는 적용되지 않습니다.
@@ -27,7 +27,7 @@ pnpm test
 pnpm build
 ```
 
-`pnpm dev`는 UI 미리보기용입니다. Gateway와의 실제 연결은 Chrome에 로드한 `dist` 확장에서 확인하세요. 확장은 `POST /v1/chat/completions`의 SSE 스트림을 사용하고, 스트림이 지원되지 않으면 일반 JSON 응답을 처리합니다. Gateway가 thinking을 스트리밍하면 답변이 시작되기 전까지 사이드 패널에 보여 주고, 최종 답변이 시작되면 숨깁니다. thinking은 대화 기록에 저장하지 않습니다. 완료된 턴의 `conversation_id`와 압축 문맥을 다음 요청에 사용합니다. 문맥이 한도에 가까워지면 이전 기록을 체크포인트로 요약하고, 전체 대화 기록은 따로 보존합니다.
+`pnpm dev`는 UI 미리보기용입니다. Gateway와의 실제 연결은 Chrome에 로드한 `dist` 확장에서 확인하세요. **모델 API**의 기본값은 Chat Completions입니다. 이 방식은 `POST /v1/chat/completions`의 SSE 스트림을 사용하고, 스트림이 지원되지 않으면 일반 JSON 응답을 처리합니다. 완료된 턴의 `conversation_id`와 압축 문맥을 다음 요청에 사용합니다. **Responses**를 선택하면 `POST /v1/responses`를 사용하고, 함수 호출 결과를 `function_call_output`으로 보내며 모델의 출력 항목을 다음 입력에 다시 포함합니다. 이 방식은 해당 Gateway 제공자가 Responses를 기본 지원해야 합니다. 현재 `llm-provider`의 OpenAI 제공자는 Responses를 그대로 전달하지만, Codex 제공자는 Chat 변환 과정에서 함수 호출 문맥을 보존하지 못하므로 Qumi에서 Codex 모델의 Responses 선택을 막습니다. API 방식을 바꾸면 현재 대화는 초기화됩니다. 어느 방식이든 Gateway가 thinking을 스트리밍하면 답변이 시작되기 전까지 사이드 패널에 보여 주고, 최종 답변이 시작되면 숨깁니다. thinking은 사용자에게 보이는 대화 기록에 저장하지 않습니다. 문맥이 한도에 가까워지면 이전 기록을 체크포인트로 요약하고, 전체 대화 기록은 따로 보존합니다.
 
 에이전트 루프는 모든 턴에 `task_start`와 `task_complete`를 제공합니다. 여러 단계나 브라우저 도구가 필요한 작업은 `task_start(objective, completion_criteria?)`로 시작하고, 시작한 작업은 단독 `task_complete(outcome, summary, findings?, artifacts?, verification?, blocker?)` 호출로 끝납니다. 짧은 일반 답변에는 두 도구가 필요하지 않습니다. 작업 도중 모델이 일반 답변만 반환하면 루프가 완료 도구를 요청하며 계속 진행합니다. 완료 도구의 구조화 결과가 사용자에게 표시되고, Gateway의 도구 응답 턴도 마무리한 뒤 다음 대화로 넘어갑니다.
 

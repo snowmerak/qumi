@@ -72,6 +72,7 @@ function SettingsView({ settings, availableModels, onClose, onSave, onExportLog,
           ...current,
           baseUrl: normalizeGatewayUrl(current.baseUrl),
           model: existing ? current.model : found[0].id,
+          apiMode: (existing ? current.model : found[0].id).startsWith("codex/") ? "chat_completions" : current.apiMode,
           contextWindowOverride: existing ? current.contextWindowOverride : 0,
         };
       });
@@ -102,7 +103,7 @@ function SettingsView({ settings, availableModels, onClose, onSave, onExportLog,
       setMessage("이 모델은 문맥 길이를 제공하지 않습니다. 문맥 길이를 입력해 주세요.");
       return;
     }
-    onSave({ ...draft, baseUrl: normalizeGatewayUrl(draft.baseUrl), model: model.id, contextWindowOverride }, found);
+    onSave({ ...draft, baseUrl: normalizeGatewayUrl(draft.baseUrl), model: model.id, apiMode: model.id.startsWith("codex/") ? "chat_completions" : draft.apiMode, contextWindowOverride }, found);
   }
 
   return (
@@ -128,11 +129,19 @@ function SettingsView({ settings, availableModels, onClose, onSave, onExportLog,
         </div>
         <div className="mp-field">
           <label className="mp-field__label" htmlFor="settings-model">모델</label>
-          <select id="settings-model" className="mp-select" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value, contextWindowOverride: 0 })} disabled={models.length === 0}>
+          <select id="settings-model" className="mp-select" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value, apiMode: event.target.value.startsWith("codex/") ? "chat_completions" : draft.apiMode, contextWindowOverride: 0 })} disabled={models.length === 0}>
             {models.length === 0 && <option value="">연결 확인 후 선택</option>}
             {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
           </select>
           <p className="mp-field__hint">Gateway가 제공하는 모델 목록에서 선택합니다.</p>
+        </div>
+        <div className="mp-field">
+          <label className="mp-field__label" htmlFor="api-mode">모델 API</label>
+          <select id="api-mode" className="mp-select" value={draft.apiMode ?? "chat_completions"} onChange={(event) => setDraft({ ...draft, apiMode: event.target.value === "responses" ? "responses" : "chat_completions" })} aria-describedby="api-mode-hint">
+            <option value="chat_completions">Chat Completions</option>
+            <option value="responses" disabled={draft.model.startsWith("codex/")}>Responses</option>
+          </select>
+          <p id="api-mode-hint" className="mp-field__hint">{draft.model.startsWith("codex/") ? "현재 Q Gateway의 Codex Responses 어댑터는 도구 호출 후 대화를 제대로 이어가지 못해 Chat Completions를 사용합니다." : "Responses는 제공자의 기본 Responses API 지원이 필요합니다. API를 바꾸면 현재 대화가 초기화됩니다."}</p>
         </div>
         <div className="mp-field">
           <label className="mp-field__label" htmlFor="context-window">문맥 길이 (토큰)</label>
@@ -339,7 +348,7 @@ export function App() {
   }
 
   function saveSettings(next: AppSettings, found: GatewayModel[]) {
-    const providerSettingsChanged = next.baseUrl !== settings.baseUrl || next.apiKey !== settings.apiKey || next.model !== settings.model || next.contextWindowOverride !== settings.contextWindowOverride;
+    const providerSettingsChanged = next.baseUrl !== settings.baseUrl || next.apiKey !== settings.apiKey || next.model !== settings.model || next.apiMode !== settings.apiMode || next.contextWindowOverride !== settings.contextWindowOverride;
     if (providerSettingsChanged) {
       setMessages([]);
       setAgent(emptyAgentState());
@@ -352,7 +361,7 @@ export function App() {
   }
 
   function changeModel(model: string) {
-    setSettings({ ...settings, model, contextWindowOverride: 0 });
+    setSettings({ ...settings, model, apiMode: model.startsWith("codex/") ? "chat_completions" : settings.apiMode, contextWindowOverride: 0 });
     setMessages([]);
     setAgent(emptyAgentState());
     setError("");

@@ -145,6 +145,77 @@ describe("Q Gateway client", () => {
     assert.equal(requests, 2);
   });
 
+  it("replays Responses function calls and tool outputs in the next stateless request", async () => {
+    const requests: Array<{ input: Array<Record<string, unknown>>; tools: Array<Record<string, unknown>>; store: boolean; include: string[] }> = [];
+    globalThis.fetch = async (input, init) => {
+      assert.equal(input, "http://127.0.0.1:53124/v1/responses");
+      requests.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify(requests.length === 1 ? {
+        status: "completed",
+        output: [
+          { type: "reasoning", id: "rs_1", encrypted_content: "opaque" },
+          { type: "function_call", id: "fc_1", call_id: "call_1", name: "lookup", arguments: '{"key":"x"}' },
+        ],
+        usage: { input_tokens: 42, input_tokens_details: { cached_tokens: 12 } },
+      } : {
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "찾았습니다" }] }],
+      }), { status: 200 });
+    };
+    const responsesSettings = { ...settings, apiMode: "responses" as const };
+    const tool = { type: "function" as const, function: { name: "lookup", description: "Look up a key", parameters: { type: "object", properties: { key: { type: "string" } } } } };
+    const first = await requestModel(responsesSettings, [{ role: "user", content: "조회" }], [tool], "old-chat-id", new AbortController().signal);
+    assert.equal(first.conversationId, "");
+    assert.equal(first.promptTokens, 42);
+    assert.equal(first.cachedTokens, 12);
+    assert.equal(first.message.tool_calls?.[0].id, "call_1");
+    const second = await requestModel(responsesSettings, [
+      { role: "user", content: "조회" },
+      first.message,
+      { role: "tool", tool_call_id: "call_1", content: "결과" },
+    ], [tool], "", new AbortController().signal);
+    assert.equal(second.message.content, "찾았습니다");
+    assert.deepEqual(requests[1].input, [
+      { role: "user", content: "조회" },
+      { type: "reasoning", id: "rs_1", encrypted_content: "opaque" },
+      { type: "function_call", id: "fc_1", call_id: "call_1", name: "lookup", arguments: '{"key":"x"}' },
+      { type: "function_call_output", call_id: "call_1", output: "결과" },
+    ]);
+    assert.equal(requests[0].tools[0].strict, false);
+    assert.equal(requests[0].store, false);
+    assert.deepEqual(requests[0].include, ["reasoning.encrypted_content"]);
+  });
+
+  it("reads Responses streaming text, thinking, tool calls, and usage", async () => {
+    const events = [
+      { type: "response.reasoning_summary_text.delta", delta: "살펴보는 중" },
+      { type: "response.output_text.delta", delta: "검" },
+      { type: "response.output_text.delta", delta: "색" },
+      { type: "response.output_item.done", output_index: 0, item: { type: "message", role: "assistant", content: [{ type: "output_text", text: "검색" }] } },
+      { type: "response.output_item.done", output_index: 1, item: { type: "function_call", call_id: "call_2", name: "lookup", arguments: "{}" } },
+      { type: "response.completed", response: { status: "completed", usage: { input_tokens: 100, input_tokens_details: { cached_tokens: 25 } } } },
+    ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+    globalThis.fetch = async () => new Response(events, { headers: { "Content-Type": "text/event-stream" } });
+    const deltas: Array<{ kind: string; text: string }> = [];
+    const reply = await requestModel({ ...settings, apiMode: "responses" }, [{ role: "user", content: "조회" }], [], "", new AbortController().signal, (delta) => deltas.push(delta));
+    assert.deepEqual(deltas, [
+      { kind: "thinking", text: "살펴보는 중" },
+      { kind: "response", text: "검" },
+      { kind: "response", text: "색" },
+    ]);
+    assert.equal(reply.message.content, "검색");
+    assert.equal(reply.message.tool_calls?.[0].id, "call_2");
+    assert.equal(reply.promptTokens, 100);
+    assert.equal(reply.cachedTokens, 25);
+  });
+
+  it("keeps Codex on Chat Completions until its Responses adapter can continue tools", async () => {
+    await assert.rejects(requestModel(
+      { ...settings, model: "codex/gpt-6-luna", apiMode: "responses" },
+      [{ role: "user", content: "조회" }], [], "", new AbortController().signal,
+    ), /Codex Responses 어댑터/);
+  });
+
   it("sends prior messages and conversation_id for the next cache-aware turn", async () => {
     let request: { input?: RequestInfo | URL; init?: RequestInit } = {};
     globalThis.fetch = async (input, init) => {
