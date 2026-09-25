@@ -1,9 +1,11 @@
 import { emptyAgentState, type AgentState } from "./agent.ts";
 import { approvalPolicyFrom, type ApprovalPolicy } from "./browser-approval.ts";
+import { languagePreferenceFrom, type LanguagePreference } from "./i18n.ts";
 import type { ChatMessage, GatewaySettings, ModelMessage } from "./gateway.ts";
 
 export interface AppSettings extends GatewaySettings {
   approvalPolicy: ApprovalPolicy;
+  language: LanguagePreference;
 }
 
 export interface SavedState {
@@ -15,7 +17,7 @@ export interface SavedState {
 const storageKey = "qumiState";
 
 export const emptyState: SavedState = {
-  settings: { baseUrl: "", apiKey: "", model: "", apiMode: "chat_completions", contextWindowOverride: 0, approvalPolicy: "changes" },
+  settings: { baseUrl: "", apiKey: "", model: "", apiMode: "chat_completions", contextWindowOverride: 0, approvalPolicy: "changes", language: "auto" },
   messages: [],
   agent: emptyAgentState(),
 };
@@ -61,6 +63,7 @@ export async function loadState(): Promise<SavedState> {
       contextWindowOverride: typeof saved.settings?.contextWindowOverride === "number" && Number.isSafeInteger(saved.settings.contextWindowOverride) && saved.settings.contextWindowOverride > 0
         ? saved.settings.contextWindowOverride : 0,
       approvalPolicy: approvalPolicyFrom(saved.settings?.approvalPolicy),
+      language: languagePreferenceFrom(saved.settings?.language),
     },
     messages,
     agent: {

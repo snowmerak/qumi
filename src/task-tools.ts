@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "./gateway.ts";
+import { translate, type Locale } from "./i18n.ts";
 
 export interface ActiveTask {
   objective: string;
@@ -69,11 +70,11 @@ export function parseTaskCompletion(value: unknown): TaskCompletion {
   };
 }
 
-export function renderTaskCompletion(completion: TaskCompletion): string {
+export function renderTaskCompletion(completion: TaskCompletion, locale: Locale = "ko"): string {
   let content = completion.summary;
-  for (const [name, values] of [["발견", completion.findings], ["결과물", completion.artifacts], ["검증", completion.verification]] as const) {
+  for (const [name, values] of [[translate(locale, "taskFindings"), completion.findings], [translate(locale, "taskArtifacts"), completion.artifacts], [translate(locale, "taskVerification"), completion.verification]] as const) {
     if (values.length) content += `\n\n${name}:\n${values.map((value) => `- ${value}`).join("\n")}`;
   }
-  if (completion.blocker) content += `\n\n막힌 이유: ${completion.blocker}`;
+  if (completion.blocker) content += `\n\n${translate(locale, "taskBlocker")}: ${completion.blocker}`;
   return content;
 }

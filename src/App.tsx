@@ -6,14 +6,14 @@ import {
   type GatewayModel,
 } from "./gateway";
 import { emptyAgentState, runTurn, type AgentState } from "./agent";
-import { approvalPolicyFrom, requiresBrowserApproval, withReadApproval } from "./browser-approval";
+import { approvalPolicyFrom, requiresBrowserApproval } from "./browser-approval";
+import { browserTurnTools } from "./browser-turn-tools";
 import { clearExecutionLog, createExecutionLog, readExecutionLog } from "./execution-log";
 import { emptyState, loadState, saveState, type AppSettings } from "./storage";
-import { canReadPages, capturePageTarget, getActiveBrowserTab, getActivePageCandidate, hasPageAccess, requestPageAccess, listOpenTabsTool, navigationTool, pageContextTool, switchTabTool, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
-import { domClickTool, domListTool, domReadTool, domWriteManyTool, domWriteTool, scrollAllTextTool } from "./dom-tools";
-import { sendKeyTool, sendKeysTool } from "./keyboard-tools";
+import { canReadPages, capturePageTarget, getActiveBrowserTab, getActivePageCandidate, hasPageAccess, requestPageAccess, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
 import { promptWithSelections, type PageSelection } from "./page-selection";
 import { cancelPageRegion, capturePageRegion } from "./page-region";
+import { formatNumber, languagePreferenceFrom, localizeApprovalTitle, localizeKnownError, resolveLocale, translate, type LanguagePreference, type Locale, type MessageKey } from "./i18n";
 
 type Connection = "checking" | "connected" | "disconnected";
 type PendingAction = { title: string; detail: string; decide: (approved: boolean) => void };
@@ -29,32 +29,32 @@ function Icon({ name }: { name: "settings" | "back" | "plus" | "send" | "eye" })
   return <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
-function Status({ connection }: { connection: Connection }) {
-  const label = connection === "connected" ? "연결됨" : connection === "checking" ? "확인 중" : "연결 안 됨";
+function Status({ connection, locale }: { connection: Connection; locale: Locale }) {
+  const label = translate(locale, connection);
   return <span className={`connection connection--${connection}`} role="status"><span className="connection__dot" />{label}</span>;
 }
 
-function SelectionNote({ selection, number, onRemove }: { selection: PageSelection; number: number; onRemove?: () => void }) {
+function SelectionNote({ selection, number, onRemove, locale }: { selection: PageSelection; number: number; onRemove?: () => void; locale: Locale }) {
   const [expanded, setExpanded] = useState(false);
   return (
     <div className={`selection-note ${expanded ? "selection-note--expanded" : ""}`}>
-      <button className="selection-note__trigger" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{`<주석 ${number}>`}</button>
-      {onRemove && <button className="selection-note__remove" type="button" aria-label={`주석 ${number} 제거`} onClick={onRemove}>×</button>}
+      <button className="selection-note__trigger" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{translate(locale, "annotation", { number })}</button>
+      {onRemove && <button className="selection-note__remove" type="button" aria-label={translate(locale, "removeAnnotation", { number })} onClick={onRemove}>×</button>}
       <div className="selection-note__detail">
         <div className="selection-note__source" title={selection.url}>{selection.title} · {selection.url}</div>
         <div className="selection-note__selector">{selection.selector}</div>
-        <div className="selection-note__section">영역의 텍스트</div>
+        <div className="selection-note__section">{translate(locale, "regionText")}</div>
         <pre>{selection.text}</pre>
-        <div className="selection-note__section">영역의 HTML{selection.truncated ? " · 길이 제한으로 일부만 첨부됨" : ""}</div>
+        <div className="selection-note__section">{translate(locale, "regionHtml")}{selection.truncated ? translate(locale, "attachmentTruncated") : ""}</div>
         <pre>{selection.html}</pre>
       </div>
     </div>
   );
 }
 
-function SelectionNotes({ selections, onRemove }: { selections: PageSelection[]; onRemove?: (index: number) => void }) {
+function SelectionNotes({ selections, onRemove, locale }: { selections: PageSelection[]; onRemove?: (index: number) => void; locale: Locale }) {
   if (!selections.length) return null;
-  return <div className="selection-notes">{selections.map((selection, index) => <SelectionNote key={`${selection.url}:${selection.selector}:${index}`} selection={selection} number={index + 1} onRemove={onRemove ? () => onRemove(index) : undefined} />)}</div>;
+  return <div className="selection-notes">{selections.map((selection, index) => <SelectionNote key={`${selection.url}:${selection.selector}:${index}`} selection={selection} number={index + 1} onRemove={onRemove ? () => onRemove(index) : undefined} locale={locale} />)}</div>;
 }
 
 interface SettingsViewProps {
@@ -64,9 +64,10 @@ interface SettingsViewProps {
   onSave: (settings: AppSettings, models: GatewayModel[]) => void;
   onExportLog: () => Promise<number>;
   onClearLog: () => Promise<void>;
+  onLanguageChange: (language: LanguagePreference) => void;
 }
 
-function SettingsView({ settings, availableModels, onClose, onSave, onExportLog, onClearLog }: SettingsViewProps) {
+function SettingsView({ settings, availableModels, onClose, onSave, onExportLog, onClearLog, onLanguageChange }: SettingsViewProps) {
   const [draft, setDraft] = useState(settings);
   const [checkedModels, setCheckedModels] = useState<GatewayModel[] | null>(null);
   const [testing, setTesting] = useState(false);
@@ -74,6 +75,8 @@ function SettingsView({ settings, availableModels, onClose, onSave, onExportLog,
   const [isError, setIsError] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [logMessage, setLogMessage] = useState("");
+  const locale = resolveLocale(draft.language);
+  const tr = (key: MessageKey, variables?: Record<string, string | number>) => translate(locale, key, variables);
   const sameGateway = draft.baseUrl === settings.baseUrl && draft.apiKey === settings.apiKey;
   const models = checkedModels ?? (sameGateway ? availableModels : []);
 
@@ -90,7 +93,7 @@ function SettingsView({ settings, availableModels, onClose, onSave, onExportLog,
     setMessage("");
     try {
       const found = await listModelDetails(draft);
-      if (found.length === 0) throw new Error("사용 가능한 모델이 없습니다. Q의 제공자 설정을 확인해 주세요.");
+      if (found.length === 0) throw new Error(tr("noAvailableModels"));
       setCheckedModels(found);
       setDraft((current) => {
         const existing = found.some((model) => model.id === current.model);
@@ -103,11 +106,11 @@ function SettingsView({ settings, availableModels, onClose, onSave, onExportLog,
         };
       });
       setIsError(false);
-      setMessage(`${found.length}개 모델을 확인했습니다.`);
+      setMessage(tr("modelsFound", { count: formatNumber(locale, found.length) }));
       return found;
     } catch (error) {
       setIsError(true);
-      setMessage(error instanceof Error ? error.message : "Gateway에 연결하지 못했습니다.");
+      setMessage(error instanceof Error ? localizeKnownError(locale, error.message) : tr("gatewayConnectFailed"));
       return null;
     } finally {
       setTesting(false);
@@ -126,7 +129,7 @@ function SettingsView({ settings, availableModels, onClose, onSave, onExportLog,
     const contextWindowOverride = model.id === draft.model ? draft.contextWindowOverride : 0;
     if (!model.contextLength && !contextWindowOverride) {
       setIsError(true);
-      setMessage("이 모델은 문맥 길이를 제공하지 않습니다. 문맥 길이를 입력해 주세요.");
+      setMessage(tr("contextLengthMissing"));
       return;
     }
     onSave({ ...draft, baseUrl: normalizeGatewayUrl(draft.baseUrl), model: model.id, apiMode: model.id.startsWith("codex/") ? "chat_completions" : draft.apiMode, contextWindowOverride }, found);
@@ -134,67 +137,78 @@ function SettingsView({ settings, availableModels, onClose, onSave, onExportLog,
 
   return (
     <div className="settings-view">
-      <button className="mp-button mp-button--ghost back-button" type="button" onClick={onClose}><Icon name="back" />채팅으로 돌아가기</button>
+      <button className="mp-button mp-button--ghost back-button" type="button" onClick={onClose}><Icon name="back" />{tr("backToChat")}</button>
       <div className="settings-heading">
-        <h2>Qumi 설정</h2>
-        <p>Q Gateway 연결과 브라우저 작업 확인 방식을 설정하세요.</p>
+        <h2>{tr("settingsTitle")}</h2>
+        <p>{tr("settingsIntro")}</p>
       </div>
       <form className="settings-form" onSubmit={submit}>
         <div className="mp-field">
+          <label className="mp-field__label" htmlFor="settings-language">{tr("language")}</label>
+          <select id="settings-language" className="mp-select" value={draft.language} onChange={(event) => { const language = languagePreferenceFrom(event.target.value); setDraft((current) => ({ ...current, language })); setMessage(""); setLogMessage(""); onLanguageChange(language); }} aria-describedby="settings-language-hint">
+            <option value="auto">{tr("languageAuto")}</option>
+            <option value="en">English</option>
+            <option value="ko">한국어</option>
+            <option value="ja">日本語</option>
+            <option value="zh">简体中文</option>
+          </select>
+          <p id="settings-language-hint" className="mp-field__hint">{tr("languageHint")}</p>
+        </div>
+        <div className="mp-field">
           <label className="mp-field__label" htmlFor="gateway-url">Gateway URL</label>
           <input id="gateway-url" className="mp-input" type="url" required placeholder="http://127.0.0.1:8080/v1" value={draft.baseUrl} onChange={(event) => changeGateway("baseUrl", event.target.value)} aria-describedby="gateway-url-hint" />
-          <p id="gateway-url-hint" className="mp-field__hint">현재는 로컬 Q Gateway에 연결합니다.</p>
+          <p id="gateway-url-hint" className="mp-field__hint">{tr("gatewayUrlHint")}</p>
         </div>
         <div className="mp-field">
-          <label className="mp-field__label" htmlFor="gateway-key">API 키 (선택)</label>
+          <label className="mp-field__label" htmlFor="gateway-key">{tr("apiKeyOptional")}</label>
           <div className="password-field">
             <input id="gateway-key" className="mp-input" type={showKey ? "text" : "password"} value={draft.apiKey} onChange={(event) => changeGateway("apiKey", event.target.value)} autoComplete="off" aria-describedby="gateway-key-hint" />
-            <button type="button" className="password-field__toggle" aria-label={showKey ? "API 키 숨기기" : "API 키 보기"} onClick={() => setShowKey(!showKey)}><Icon name="eye" /></button>
+            <button type="button" className="password-field__toggle" aria-label={tr(showKey ? "hideApiKey" : "showApiKey")} onClick={() => setShowKey(!showKey)}><Icon name="eye" /></button>
           </div>
-          <p id="gateway-key-hint" className="mp-field__hint">Q Gateway에 인증 키를 설정한 경우에만 입력하세요.</p>
+          <p id="gateway-key-hint" className="mp-field__hint">{tr("apiKeyHint")}</p>
         </div>
         <div className="mp-field">
-          <label className="mp-field__label" htmlFor="settings-model">모델</label>
+          <label className="mp-field__label" htmlFor="settings-model">{tr("model")}</label>
           <select id="settings-model" className="mp-select" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value, apiMode: event.target.value.startsWith("codex/") ? "chat_completions" : draft.apiMode, contextWindowOverride: 0 })} disabled={models.length === 0}>
-            {models.length === 0 && <option value="">연결 확인 후 선택</option>}
+            {models.length === 0 && <option value="">{tr("selectAfterConnection")}</option>}
             {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
           </select>
-          <p className="mp-field__hint">Gateway가 제공하는 모델 목록에서 선택합니다.</p>
+          <p className="mp-field__hint">{tr("modelHint")}</p>
         </div>
         <div className="mp-field">
-          <label className="mp-field__label" htmlFor="api-mode">모델 API</label>
+          <label className="mp-field__label" htmlFor="api-mode">{tr("modelApi")}</label>
           <select id="api-mode" className="mp-select" value={draft.apiMode ?? "chat_completions"} onChange={(event) => setDraft({ ...draft, apiMode: event.target.value === "responses" ? "responses" : "chat_completions" })} aria-describedby="api-mode-hint">
             <option value="chat_completions">Chat Completions</option>
             <option value="responses" disabled={draft.model.startsWith("codex/")}>Responses</option>
           </select>
-          <p id="api-mode-hint" className="mp-field__hint">{draft.model.startsWith("codex/") ? "현재 Q Gateway의 Codex Responses 어댑터는 도구 호출 후 대화를 제대로 이어가지 못해 Chat Completions를 사용합니다." : "Responses는 제공자의 기본 Responses API 지원이 필요합니다. API를 바꾸면 현재 대화가 초기화됩니다."}</p>
+          <p id="api-mode-hint" className="mp-field__hint">{tr(draft.model.startsWith("codex/") ? "codexApiHint" : "responsesApiHint")}</p>
         </div>
         <div className="mp-field">
-          <label className="mp-field__label" htmlFor="context-window">문맥 길이 (토큰)</label>
-          <input id="context-window" className="mp-input" type="number" min="1024" step="1" placeholder={selectedModel?.contextLength ? String(selectedModel.contextLength) : "모델이 제공하지 않으면 입력"} value={draft.contextWindowOverride || ""} onChange={(event) => setDraft({ ...draft, contextWindowOverride: event.target.value ? Number(event.target.value) : 0 })} />
-          <p className="mp-field__hint">{selectedModel?.contextLength ? `Gateway 제공값 ${selectedModel.contextLength.toLocaleString()} · 입력하면 우선 적용됩니다.` : "Gateway 제공값이 없으면 직접 입력해야 압축할 수 있습니다."}</p>
+          <label className="mp-field__label" htmlFor="context-window">{tr("contextLength")}</label>
+          <input id="context-window" className="mp-input" type="number" min="1024" step="1" placeholder={selectedModel?.contextLength ? String(selectedModel.contextLength) : tr("contextPlaceholder")} value={draft.contextWindowOverride || ""} onChange={(event) => setDraft({ ...draft, contextWindowOverride: event.target.value ? Number(event.target.value) : 0 })} />
+          <p className="mp-field__hint">{selectedModel?.contextLength ? tr("contextProvided", { count: formatNumber(locale, selectedModel.contextLength) }) : tr("contextMissing")}</p>
         </div>
         <div className="mp-field">
-          <label className="mp-field__label" htmlFor="approval-policy">브라우저 작업 확인</label>
+          <label className="mp-field__label" htmlFor="approval-policy">{tr("approvalPolicy")}</label>
           <select id="approval-policy" className="mp-select" value={draft.approvalPolicy} onChange={(event) => setDraft({ ...draft, approvalPolicy: approvalPolicyFrom(event.target.value) })} aria-describedby="approval-policy-hint">
-            <option value="all">모든 작업마다 확인</option>
-            <option value="changes">변경 작업만 확인</option>
-            <option value="none">확인 없이 실행</option>
+            <option value="all">{tr("approvalAll")}</option>
+            <option value="changes">{tr("approvalChanges")}</option>
+            <option value="none">{tr("approvalNone")}</option>
           </select>
-          <p id="approval-policy-hint" className="mp-field__hint">읽기는 페이지·DOM·탭 목록 조회, 변경은 입력·클릭·탭 이동입니다. Chrome 사이트 접근 권한은 별도로 요청됩니다.</p>
+          <p id="approval-policy-hint" className="mp-field__hint">{tr("approvalHint")}</p>
         </div>
         <div className="mp-field">
-          <span className="mp-field__label">실행 진단 로그</span>
-          <p className="mp-field__hint">최근 7일, 최대 10,000개 이벤트를 이 브라우저에 저장합니다. 프롬프트·페이지 내용·API 키는 기록하지 않습니다.</p>
+          <span className="mp-field__label">{tr("executionLog")}</span>
+          <p className="mp-field__hint">{tr("logHint")}</p>
           <div className="execution-log-actions">
-            <button className="mp-button mp-button--secondary" type="button" onClick={() => void onExportLog().then((count) => setLogMessage(`${count}개 이벤트를 다운로드했습니다.`)).catch(() => setLogMessage("로그를 다운로드하지 못했습니다."))}>JSON 다운로드</button>
-            <button className="mp-button mp-button--ghost" type="button" onClick={() => void onClearLog().then(() => setLogMessage("저장된 실행 로그를 지웠습니다.")).catch(() => setLogMessage("로그를 지우지 못했습니다."))}>로그 지우기</button>
+            <button className="mp-button mp-button--secondary" type="button" onClick={() => void onExportLog().then((count) => setLogMessage(tr("logDownloaded", { count: formatNumber(locale, count) }))).catch(() => setLogMessage(tr("logDownloadFailed")))}>{tr("downloadJson")}</button>
+            <button className="mp-button mp-button--ghost" type="button" onClick={() => void onClearLog().then(() => setLogMessage(tr("logCleared"))).catch(() => setLogMessage(tr("logClearFailed")))}>{tr("clearLog")}</button>
           </div>
           {logMessage && <p className="mp-field__hint" role="status">{logMessage}</p>}
         </div>
-        <button className="mp-button mp-button--secondary" type="button" onClick={() => void checkConnection()} disabled={testing}>{testing ? "확인 중…" : "연결 확인"}</button>
+        <button className="mp-button mp-button--secondary" type="button" onClick={() => void checkConnection()} disabled={testing}>{tr(testing ? "checkingEllipsis" : "checkConnection")}</button>
         {message && <div className={`inline-notice ${isError ? "inline-notice--error" : "inline-notice--success"}`} role={isError ? "alert" : "status"}>{message}</div>}
-        <button className="mp-button mp-button--primary save-button" type="submit" disabled={testing}>{testing ? "확인 중…" : "저장"}</button>
+        <button className="mp-button mp-button--primary save-button" type="submit" disabled={testing}>{tr(testing ? "checkingEllipsis" : "save")}</button>
       </form>
     </div>
   );
@@ -204,6 +218,8 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [view, setView] = useState<"chat" | "settings">("chat");
   const [settings, setSettings] = useState<AppSettings>(emptyState.settings);
+  const locale = resolveLocale(settings.language);
+  const tr = (key: MessageKey, variables?: Record<string, string | number>) => translate(locale, key, variables);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [agent, setAgent] = useState<AgentState>(emptyAgentState);
   const [models, setModels] = useState<GatewayModel[]>([]);
@@ -227,6 +243,8 @@ export function App() {
   const requestController = useRef<AbortController | null>(null);
   const pageCandidateRef = useRef<PageCandidate | null>(null);
   const regionTargetRef = useRef<PageTarget | null>(null);
+
+  useEffect(() => { document.documentElement.lang = locale === "zh" ? "zh-CN" : locale; }, [locale]);
 
   useEffect(() => {
     let active = true;
@@ -252,12 +270,12 @@ export function App() {
           setAgent(emptyAgentState());
         }
       }).catch(() => { if (active) setConnection("disconnected"); });
-    }).catch(() => { if (active) { setReady(true); setError("저장된 설정을 읽지 못했습니다."); } });
+    }).catch(() => { if (active) { setReady(true); setError(tr("readSettingsFailed")); } });
     return () => { active = false; };
   }, []);
 
   useEffect(() => {
-    if (ready) void saveState({ settings, messages, agent }).catch(() => setError("대화 내용을 저장하지 못했습니다."));
+    if (ready) void saveState({ settings, messages, agent }).catch(() => setError(tr("saveConversationFailed")));
   }, [ready, settings, messages, agent]);
 
   useEffect(() => {
@@ -342,8 +360,8 @@ export function App() {
 
   async function attachPage() {
     setPageError("");
-    if (!pageCandidate) { setPageError("일반 HTTP(S) 웹페이지를 연 뒤 다시 연결해 주세요."); return; }
-    if (pageCandidate.loading) { setPageError("페이지 로딩이 끝난 뒤 연결해 주세요."); return; }
+    if (!pageCandidate) { setPageError(tr("openWebPage")); return; }
+    if (pageCandidate.loading) { setPageError(tr("waitForPageLoad")); return; }
     const candidate = pageCandidate;
     const stillCurrent = () => pageCandidateRef.current?.tabId === candidate.tabId && pageCandidateRef.current.url === candidate.url && !pageCandidateRef.current.loading;
     try {
@@ -352,14 +370,14 @@ export function App() {
     } catch (cause) {
       if (!stillCurrent()) return;
       setPageTarget(null);
-      setPageError(cause instanceof Error ? cause.message : "페이지에 연결하지 못했습니다.");
+      setPageError(cause instanceof Error ? localizeKnownError(locale, cause.message) : tr("pageConnectFailed"));
     }
   }
 
   async function attachSelection() {
     if (regionTargetRef.current) { await cancelPageRegion(regionTargetRef.current); return; }
     if (!pageTarget || sending) return;
-    if (selectedRegions.length >= 5) { setError("선택 영역은 한 요청에 최대 5개까지 첨부할 수 있습니다."); return; }
+    if (selectedRegions.length >= 5) { setError(tr("tooManyRegions")); return; }
     regionTargetRef.current = pageTarget;
     setSelectionLoading(true);
     setError("");
@@ -367,7 +385,7 @@ export function App() {
       const selection = await capturePageRegion(pageTarget);
       if (selection) setSelectedRegions((current) => [...current, selection]);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "선택 영역을 읽지 못했습니다.");
+      setError(cause instanceof Error ? localizeKnownError(locale, cause.message) : tr("regionReadFailed"));
     } finally {
       regionTargetRef.current = null;
       setSelectionLoading(false);
@@ -387,12 +405,12 @@ export function App() {
         resolve(approved);
       };
       signal.addEventListener("abort", onAbort, { once: true });
-      setPendingAction({ title, detail, decide });
+      setPendingAction({ title: localizeApprovalTitle(locale, title), detail, decide });
     });
   }
 
   function approveNavigation(url: string, disposition: TabAction, signal: AbortSignal): Promise<boolean> {
-    const title = disposition === "new_tab" ? "새 탭 열기" : disposition === "existing_tab" ? "기존 탭 전환" : "현재 탭 이동";
+    const title = tr(disposition === "new_tab" ? "openNewTabApproval" : disposition === "existing_tab" ? "switchTabApproval" : "navigateTabApproval");
     return approveChange(title, url, signal);
   }
 
@@ -448,44 +466,37 @@ export function App() {
     setStreamed("");
     setThinking("");
     responseStarted.current = false;
-    setProgress("응답 중…");
+    setProgress(tr("responding"));
     setError("");
     setSending(true);
     try {
       const browserTab = await getActiveBrowserTab();
       const connectedPage = pageTarget && browserTab?.tabId === pageTarget.tabId && browserTab.url === pageTarget.url ? pageTarget : null;
       const result = await runTurn({
-        settings, contextWindow, state: agent, prompt: promptWithSelections(content, selections), signal: controller.signal,
+        settings, contextWindow, state: agent, prompt: promptWithSelections(content, selections), signal: controller.signal, locale,
         onTrace: executionLog.record,
-        tools: [
-          ...(connectedPage ? [
-            withReadApproval(pageContextTool(connectedPage), connectedPage, settings.approvalPolicy, approveAction),
-            withReadApproval(domListTool(connectedPage), connectedPage, settings.approvalPolicy, approveAction),
-            withReadApproval(domReadTool(connectedPage), connectedPage, settings.approvalPolicy, approveAction),
-            withReadApproval(scrollAllTextTool(connectedPage, Math.max(1_024, Math.min(48_000, contextWindow - 512))), connectedPage, settings.approvalPolicy, approveAction),
-            domWriteTool(connectedPage, approveChange), domWriteManyTool(connectedPage, approveChange), domClickTool(connectedPage, approveChange),
-            sendKeyTool(connectedPage, approveChange), sendKeysTool(connectedPage, approveChange),
-          ] : []),
-          ...(browserTab ? [
-            withReadApproval(listOpenTabsTool(browserTab), browserTab, settings.approvalPolicy, approveAction),
-            navigationTool(browserTab, approveNavigation, () => setPageTarget(null)),
-            switchTabTool(browserTab, approveNavigation, () => setPageTarget(null)),
-          ] : []),
-        ],
+        tools: browserTab ? browserTurnTools(browserTab, connectedPage, {
+          approvalPolicy: settings.approvalPolicy,
+          approveRead: approveAction,
+          approveChange,
+          approveNavigation,
+          onNavigated: () => setPageTarget(null),
+          maxResultBytes: Math.max(1_024, Math.min(48_000, contextWindow - 512)),
+        }) : [],
         onEvent: (event) => {
-          if (event.type === "model") setProgress("모델 응답 대기 중…");
+          if (event.type === "model") setProgress(tr("waitingForModel"));
           if (event.type === "thinking" && !responseStarted.current) {
-            setProgress("생각 중…");
+            setProgress(tr("thinkingEllipsis"));
             setThinking((current) => (current + event.text).slice(-16_000));
           }
           if (event.type === "delta") {
             responseStarted.current = true;
             setThinking("");
-            setProgress("응답 중…");
+            setProgress(tr("responding"));
             setStreamed((current) => current + event.text);
           }
-          if (event.type === "compacting") { responseStarted.current = false; setProgress("문맥 압축 중…"); setStreamed(""); setThinking(""); }
-          if (event.type === "tool") { responseStarted.current = false; setProgress(`${event.name} 실행 중…`); setStreamed(""); setThinking(""); }
+          if (event.type === "compacting") { responseStarted.current = false; setProgress(tr("compacting")); setStreamed(""); setThinking(""); }
+          if (event.type === "tool") { responseStarted.current = false; setProgress(tr("runningTool", { tool: event.name })); setStreamed(""); setThinking(""); }
         },
       });
       setAgent(result.state);
@@ -493,9 +504,9 @@ export function App() {
       setSelectedRegions([]);
     } catch (cause) {
       setDraft(content);
-      setError(controller.signal.aborted ? "요청을 취소했습니다." : cause instanceof Error ? cause.message : "응답을 받지 못했습니다.");
+      setError(controller.signal.aborted ? tr("requestCancelled") : cause instanceof Error ? localizeKnownError(locale, cause.message) : tr("responseFailed"));
     } finally {
-      void executionLog.finish().catch(() => setError((current) => current || "실행 로그를 저장하지 못했습니다."));
+      void executionLog.finish().catch(() => setError((current) => current || tr("logSaveFailed")));
       requestController.current = null;
       setPendingPrompt("");
       setStreamed("");
@@ -514,56 +525,56 @@ export function App() {
       <header className="app-header">
         <div className="brand"><span className="brand__mark" aria-hidden="true">Q</span><h1>Qumi</h1></div>
         <div className="header-actions">
-          <Status connection={connection} />
-          <button className="mp-button mp-button--ghost icon-button" type="button" aria-label="Qumi 설정" onClick={() => setView("settings")} disabled={sending}><Icon name="settings" /></button>
+          <Status connection={connection} locale={locale} />
+          <button className="mp-button mp-button--ghost icon-button" type="button" aria-label={tr("settingsAria")} onClick={() => setView("settings")} disabled={sending}><Icon name="settings" /></button>
         </div>
       </header>
 
       {view === "settings" ? (
-        <SettingsView settings={settings} availableModels={models} onClose={() => setView("chat")} onSave={saveSettings} onExportLog={exportLog} onClearLog={clearExecutionLog} />
+        <SettingsView settings={settings} availableModels={models} onClose={() => setView("chat")} onSave={saveSettings} onExportLog={exportLog} onClearLog={clearExecutionLog} onLanguageChange={(language) => { setSettings((current) => ({ ...current, language })); setError(""); setPageError(""); }} />
       ) : (
         <>
           <div className="model-bar">
             <div className="mp-field">
-              <label className="mp-field__label" htmlFor="active-model">모델</label>
+              <label className="mp-field__label" htmlFor="active-model">{tr("model")}</label>
               <select id="active-model" className="mp-select" value={settings.model} onChange={(event) => changeModel(event.target.value)} disabled={models.length === 0 || sending}>
-                {models.length === 0 && <option value="">모델 없음</option>}
+                {models.length === 0 && <option value="">{tr("noModels")}</option>}
                 {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
               </select>
             </div>
-            <button className="mp-button mp-button--ghost icon-button new-chat" type="button" aria-label="새 대화" title="새 대화" onClick={() => { setMessages([]); setAgent(emptyAgentState()); setSelectedRegions([]); setError(""); }} disabled={sending || messages.length === 0}><Icon name="plus" /></button>
+            <button className="mp-button mp-button--ghost icon-button new-chat" type="button" aria-label={tr("newChat")} title={tr("newChat")} onClick={() => { setMessages([]); setAgent(emptyAgentState()); setSelectedRegions([]); setError(""); }} disabled={sending || messages.length === 0}><Icon name="plus" /></button>
           </div>
 
           <div className="page-bar">
             <div className="page-bar__context">
-              <span className="page-bar__label">현재 페이지</span>
-              <span className="page-bar__title" title={pageTarget?.url || pageCandidate?.url}>{pageTarget ? `${pageTarget.title} · ${pageTarget.url}` : pageAccessAvailable ? pageCandidate ? `${pageCandidate.title} · ${pageCandidate.url}` : "연결할 웹페이지 없음" : "Chrome 확장에서 연결 가능"}</span>
-              <span className="page-bar__hint">{pageTarget ? "페이지를 읽으면 내용이 Q Gateway에 전달됩니다." : pageAccessAvailable ? pageCandidate ? pageCandidate.loading ? "페이지 로딩 중…" : "페이지 로드 후 자동 연결됩니다. 브라우저에서 사이트 접근을 제한했다면 연결을 눌러 주세요." : "본문 연결은 일반 HTTP(S) 페이지에서 가능합니다. 주소 이동과 탭 전환은 사용할 수 있습니다." : "확장을 Chrome에 로드하면 연결할 수 있습니다."}</span>
+              <span className="page-bar__label">{tr("currentPage")}</span>
+              <span className="page-bar__title" title={pageTarget?.url || pageCandidate?.url}>{pageTarget ? `${pageTarget.title} · ${pageTarget.url}` : pageAccessAvailable ? pageCandidate ? `${pageCandidate.title} · ${pageCandidate.url}` : tr("noWebPage") : tr("extensionOnly")}</span>
+              <span className="page-bar__hint">{pageTarget ? tr("pageReadHint") : pageAccessAvailable ? pageCandidate ? pageCandidate.loading ? tr("pageLoading") : tr("pageAutoConnectHint") : tr("pageNavigationHint") : tr("extensionHint")}</span>
               {pageError && <span className="page-bar__error" role="alert">{pageError}</span>}
             </div>
-            {!pageTarget && <button className="mp-button mp-button--secondary" type="button" onClick={() => void attachPage()} disabled={sending || !pageAccessAvailable || !pageCandidate || !!pageCandidate.loading}>연결</button>}
+            {!pageTarget && <button className="mp-button mp-button--secondary" type="button" onClick={() => void attachPage()} disabled={sending || !pageAccessAvailable || !pageCandidate || !!pageCandidate.loading}>{tr("connect")}</button>}
           </div>
 
-          <main className="chat-history" aria-label="대화 내용">
+          <main className="chat-history" aria-label={tr("conversation")}>
             {messages.length === 0 && (
               <div className="empty-chat">
-                <h2>{connection === "connected" ? "무엇을 도와드릴까요?" : "Q Gateway 연결이 필요합니다."}</h2>
-                <p>{connection === "connected" ? "Q에 질문을 보내 대화를 시작하세요." : "설정에서 Gateway 주소와 모델을 확인하세요."}</p>
-                {connection !== "connected" && <button className="mp-button mp-button--secondary" type="button" onClick={() => setView("settings")}>Gateway 설정</button>}
+                <h2>{tr(connection === "connected" ? "howCanIHelp" : "gatewayRequired")}</h2>
+                <p>{tr(connection === "connected" ? "startConversation" : "checkGateway")}</p>
+                {connection !== "connected" && <button className="mp-button mp-button--secondary" type="button" onClick={() => setView("settings")}>{tr("gatewaySettings")}</button>}
               </div>
             )}
             <div className="message-list">
               {messages.map((message, index) => (
                 <article className={`message message--${message.role}`} key={index}>
-                  <div className="message__label">{message.role === "user" ? "사용자" : "Qumi"}</div>
+                  <div className="message__label">{message.role === "user" ? tr("user") : "Qumi"}</div>
                   <p className="message__content">{message.content}</p>
-                  {message.selections && <SelectionNotes selections={message.selections} />}
-                  {typeof message.cachedTokens === "number" && message.cachedTokens > 0 && <p className="message__meta">캐시 사용 {message.cachedTokens.toLocaleString()} 토큰</p>}
+                  {message.selections && <SelectionNotes selections={message.selections} locale={locale} />}
+                  {typeof message.cachedTokens === "number" && message.cachedTokens > 0 && <p className="message__meta">{tr("cachedTokens", { count: formatNumber(locale, message.cachedTokens) })}</p>}
                 </article>
               ))}
-              {pendingPrompt && <article className="message message--user"><div className="message__label">사용자</div><p className="message__content">{pendingPrompt}</p><SelectionNotes selections={selectedRegions} /></article>}
+              {pendingPrompt && <article className="message message--user"><div className="message__label">{tr("user")}</div><p className="message__content">{pendingPrompt}</p><SelectionNotes selections={selectedRegions} locale={locale} /></article>}
               {sending && <div className="pending-message" role="status"><span className="mp-spinner" aria-hidden="true" />{progress}</div>}
-              {sending && thinking && !streamed && <div className="thinking-preview" aria-label="모델 생각"><div className="thinking-preview__label">생각 중</div><p className="thinking-preview__content" ref={thinkingContent}>{thinking}</p></div>}
+              {sending && thinking && !streamed && <div className="thinking-preview" aria-label={tr("thinking")}><div className="thinking-preview__label">{tr("thinking")}</div><p className="thinking-preview__content" ref={thinkingContent}>{thinking}</p></div>}
               {streamed && <article className="message message--assistant"><div className="message__label">Qumi</div><p className="message__content">{streamed}</p></article>}
               <div ref={messagesEnd} />
             </div>
