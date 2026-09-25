@@ -11,7 +11,8 @@ import { clearExecutionLog, createExecutionLog, readExecutionLog } from "./execu
 import { emptyState, loadState, saveState, type AppSettings } from "./storage";
 import { canReadPages, capturePageTarget, getActivePageCandidate, hasPageAccess, requestPageAccess, listOpenTabsTool, navigationTool, pageContextTool, switchTabTool, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
 import { domClickTool, domListTool, domReadTool, domWriteManyTool, domWriteTool, scrollAllTextTool } from "./dom-tools";
-import { capturePageSelection, promptWithSelections, watchPageSelection, type PageSelection } from "./page-selection";
+import { promptWithSelections, type PageSelection } from "./page-selection";
+import { cancelPageRegion, capturePageRegion } from "./page-region";
 
 type Connection = "checking" | "connected" | "disconnected";
 type PendingAction = { title: string; detail: string; decide: (approved: boolean) => void };
@@ -41,9 +42,9 @@ function SelectionNote({ selection, number, onRemove }: { selection: PageSelecti
       <div className="selection-note__detail">
         <div className="selection-note__source" title={selection.url}>{selection.title} · {selection.url}</div>
         <div className="selection-note__selector">{selection.selector}</div>
-        <div className="selection-note__section">선택한 텍스트</div>
+        <div className="selection-note__section">영역의 텍스트</div>
         <pre>{selection.text}</pre>
-        <div className="selection-note__section">선택한 HTML{selection.truncated ? " · 길이 제한으로 일부만 첨부됨" : ""}</div>
+        <div className="selection-note__section">영역의 HTML{selection.truncated ? " · 길이 제한으로 일부만 첨부됨" : ""}</div>
         <pre>{selection.html}</pre>
       </div>
     </div>
@@ -224,6 +225,7 @@ export function App() {
   const responseStarted = useRef(false);
   const requestController = useRef<AbortController | null>(null);
   const pageCandidateRef = useRef<PageCandidate | null>(null);
+  const regionTargetRef = useRef<PageTarget | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -305,7 +307,6 @@ export function App() {
       if (!active) return;
       if (!granted) { setPageTarget(null); return; }
       const target = await capturePageTarget(pageCandidate);
-      await watchPageSelection(target);
       if (active) { setPageTarget(target); setPageError(""); }
     }).catch(() => { if (active) setPageTarget(null); });
     return () => { active = false; };
@@ -330,6 +331,12 @@ export function App() {
     };
   }, [pageTarget]);
 
+  useEffect(() => {
+    return () => {
+      if (pageTarget && regionTargetRef.current?.tabId === pageTarget.tabId) void cancelPageRegion(pageTarget);
+    };
+  }, [pageTarget]);
+
   useEffect(() => () => requestController.current?.abort(), []);
 
   async function attachPage() {
@@ -340,7 +347,6 @@ export function App() {
     const stillCurrent = () => pageCandidateRef.current?.tabId === candidate.tabId && pageCandidateRef.current.url === candidate.url && !pageCandidateRef.current.loading;
     try {
       const target = await requestPageAccess(candidate);
-      await watchPageSelection(target);
       if (stillCurrent()) setPageTarget(target);
     } catch (cause) {
       if (!stillCurrent()) return;
@@ -350,16 +356,19 @@ export function App() {
   }
 
   async function attachSelection() {
-    if (!pageTarget || selectionLoading || sending) return;
+    if (regionTargetRef.current) { await cancelPageRegion(regionTargetRef.current); return; }
+    if (!pageTarget || sending) return;
     if (selectedRegions.length >= 5) { setError("선택 영역은 한 요청에 최대 5개까지 첨부할 수 있습니다."); return; }
+    regionTargetRef.current = pageTarget;
     setSelectionLoading(true);
     setError("");
     try {
-      const selection = await capturePageSelection(pageTarget);
-      setSelectedRegions((current) => [...current, selection]);
+      const selection = await capturePageRegion(pageTarget);
+      if (selection) setSelectedRegions((current) => [...current, selection]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "선택 영역을 읽지 못했습니다.");
     } finally {
+      regionTargetRef.current = null;
       setSelectionLoading(false);
     }
   }
@@ -560,7 +569,7 @@ export function App() {
             </div>}
             {error && <div className="composer__error" role="alert">{error}</div>}
             {connection === "connected" && !contextWindow && <div className="composer__error" role="status">설정에서 이 모델의 문맥 길이를 입력해 주세요.</div>}
-            {pageTarget && <div className="composer__selection-actions"><button className="mp-button mp-button--secondary" type="button" onClick={() => void attachSelection()} disabled={sending || selectionLoading || selectedRegions.length >= 5}>{selectionLoading ? "읽는 중…" : "+ 선택 영역 추가"}</button><span>페이지에서 텍스트를 드래그한 뒤 추가</span></div>}
+            {pageTarget && <div className="composer__selection-actions"><button className="mp-button mp-button--secondary" type="button" onClick={() => void attachSelection()} disabled={sending || (!selectionLoading && selectedRegions.length >= 5)}>{selectionLoading ? "선택 취소" : "+ 영역 선택"}</button><span>{selectionLoading ? "페이지에서 사각형을 드래그하세요 · Esc로 취소" : "버튼을 누른 뒤 페이지의 원하는 영역을 드래그"}</span></div>}
             {!sending && <SelectionNotes selections={selectedRegions} onRemove={(index) => setSelectedRegions((current) => current.filter((_, itemIndex) => itemIndex !== index))} />}
             <label className="sr-only" htmlFor="chat-input">Q에게 물어보기</label>
             <textarea id="chat-input" className="mp-textarea" rows={3} placeholder="Q에게 물어보기" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} disabled={!canSend} />

@@ -1,89 +1,119 @@
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { capturePageSelection, promptWithSelections, watchPageSelection, type PageSelection } from "./page-selection.ts";
+import { cancelPageRegion, capturePageRegion, regionPickerInPage } from "./page-region.ts";
+import { promptWithSelections, type PageSelection } from "./page-selection.ts";
 import type { PageTarget } from "./page-context.ts";
 
-const originalChrome = Object.getOwnPropertyDescriptor(globalThis, "chrome");
-const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
-const originalLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
-const originalNode = Object.getOwnPropertyDescriptor(globalThis, "Node");
+const names = ["chrome", "window", "document", "location", "Node", "NodeFilter", "innerWidth", "innerHeight", "getComputedStyle"] as const;
+const originals = Object.fromEntries(names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
 const target: PageTarget = { tabId: 7, windowId: 2, url: "https://example.com/page", title: "Example" };
-const selection: PageSelection = {
-  url: target.url,
-  title: target.title,
-  selector: "main:nth-of-type(1) > p:nth-of-type(2)",
-  text: "Hello world",
-  html: "Hello <strong>world</strong>",
-  truncated: false,
+const region: PageSelection = {
+  url: target.url, title: target.title, selector: "p:nth-of-type(1)",
+  text: "Hello world", html: "Hello <strong>world</strong>", truncated: false,
 };
 
 afterEach(() => {
-  for (const [name, descriptor] of [["chrome", originalChrome], ["window", originalWindow], ["document", originalDocument], ["location", originalLocation], ["Node", originalNode]] as const) {
+  for (const name of names) {
+    const descriptor = originals[name];
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
     else Reflect.deleteProperty(globalThis, name);
   }
 });
 
-function mockChrome(query: () => Promise<unknown[]>, result: PageSelection | null): void {
-  Object.defineProperty(globalThis, "chrome", {
-    configurable: true,
-    value: { tabs: { query }, scripting: { executeScript: async () => [{ result }] } },
-  });
+function mock(name: string, value: unknown): void {
+  Object.defineProperty(globalThis, name, { configurable: true, value });
 }
 
-describe("page selection attachment", () => {
-  it("keeps a dragged selection after the page loses focus to the side panel", async () => {
-    const listeners = new Map<string, () => void>();
-    const body = { tagName: "BODY", children: [] as unknown[], parentElement: null, contains: (element: unknown) => element === paragraph };
-    const main = { tagName: "MAIN", children: [] as unknown[], parentElement: body };
-    const paragraph = { tagName: "P", nodeType: 1, children: [], parentElement: main };
-    main.children.push({ tagName: "P" }, paragraph);
-    body.children.push(main);
-    let selected = false;
-    const selectedRange = { commonAncestorContainer: paragraph, cloneContents: () => ({}) };
-    Object.defineProperty(globalThis, "Node", { configurable: true, value: { ELEMENT_NODE: 1 } });
-    Object.defineProperty(globalThis, "location", { configurable: true, value: { href: target.url } });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { getSelection: () => selected ? { isCollapsed: false, rangeCount: 1, toString: () => selection.text, getRangeAt: () => selectedRange } : null } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
+describe("page region attachment", () => {
+  it("captures text and HTML under a drawn rectangle and removes the overlay", async () => {
+    const surfaceListeners = new Map<string, (event: Record<string, unknown>) => void>();
+    const windowListeners = new Map<string, () => void>();
+    const documentListeners = new Map<string, (event: Record<string, unknown>) => void>();
+    const box = { style: {} as Record<string, string> };
+    const hint = { textContent: "" };
+    const surface = {
+      addEventListener: (name: string, listener: (event: Record<string, unknown>) => void) => surfaceListeners.set(name, listener),
+      setPointerCapture: () => {},
+    };
+    let removed = false;
+    const host = {
+      style: { setProperty: () => {} },
+      attachShadow: () => ({ innerHTML: "", querySelector: (selector: string) => ({ ".surface": surface, ".box": box, ".hint": hint })[selector as ".surface" | ".box" | ".hint"] }),
+      remove: () => { removed = true; },
+    };
+    const paragraph = {
+      nodeType: 1, tagName: "P", parentElement: null as unknown, textContent: "Hello world",
+      getBoundingClientRect: () => ({ left: 10, top: 10, right: 140, bottom: 45 }),
+      closest: () => null,
+    };
+    const body = { contains: (element: unknown) => element === paragraph, children: [paragraph] };
+    paragraph.parentElement = body;
+    const textNode = { textContent: "Hello world", parentElement: paragraph };
+    let visited = false;
+    const makeRange = () => ({
+      commonAncestorContainer: paragraph,
+      selectNodeContents: () => {},
+      getClientRects: () => [{ left: 10, top: 10, right: 140, bottom: 45 }],
+      setStart: () => {},
+      setEnd: () => {},
+      cloneContents: () => ({ html: region.html }),
+      toString: () => region.text,
+    });
+    mock("Node", { ELEMENT_NODE: 1 });
+    mock("NodeFilter", { SHOW_TEXT: 4 });
+    mock("innerWidth", 400);
+    mock("innerHeight", 300);
+    mock("location", { href: target.url });
+    mock("getComputedStyle", () => ({ display: "block", visibility: "visible" }));
+    mock("window", {
+      setTimeout, clearTimeout,
+      addEventListener: (name: string, listener: () => void) => windowListeners.set(name, listener),
+      removeEventListener: (name: string) => windowListeners.delete(name),
+    });
+    mock("document", {
       body, title: target.title,
-      addEventListener: (event: string, listener: () => void) => listeners.set(event, listener),
-      createElement: () => ({ append: () => {}, innerHTML: selection.html }),
-      querySelectorAll: (selector: string) => selector === selection.selector ? [paragraph] : [],
-    } });
-    Object.defineProperty(globalThis, "chrome", { configurable: true, value: {
-      tabs: { query: async () => [{ id: target.tabId, url: target.url }] },
-      scripting: { executeScript: async ({ func, args }: { func: (action: "watch" | "capture") => PageSelection | null; args: ["watch" | "capture"] }) => [{ result: func(...args) }] },
-    } });
+      documentElement: { appendChild: () => {} },
+      createElement: () => removed ? { innerHTML: "", append(fragment: { html: string }) { this.innerHTML = fragment.html; } } : host,
+      createTreeWalker: () => ({ currentNode: textNode, nextNode: () => !visited && (visited = true) }),
+      createRange: makeRange,
+      querySelectorAll: (selector: string) => selector === region.selector ? [paragraph] : [],
+      addEventListener: (name: string, listener: (event: Record<string, unknown>) => void) => documentListeners.set(name, listener),
+      removeEventListener: (name: string) => documentListeners.delete(name),
+    });
 
-    await watchPageSelection(target);
-    listeners.get("pointerdown")?.();
-    selected = true;
-    listeners.get("mouseup")?.();
-    selected = false;
-    assert.deepEqual(await capturePageSelection(target), selection);
+    const pending = regionPickerInPage("start") as Promise<PageSelection | null>;
+    const pointer = (clientX: number, clientY: number) => ({ button: 0, pointerId: 1, clientX, clientY, preventDefault: () => {} });
+    surfaceListeners.get("pointerdown")?.(pointer(5, 5));
+    surfaceListeners.get("pointermove")?.(pointer(150, 55));
+    surfaceListeners.get("pointerup")?.(pointer(150, 55));
+    assert.deepEqual(await pending, region);
+    assert.equal(removed, true);
+    assert.equal(documentListeners.size, 0);
+    assert.equal(windowListeners.size, 0);
 
-    listeners.get("pointerdown")?.();
-    await assert.rejects(capturePageSelection(target), /텍스트를 드래그/);
+    removed = false;
+    const cancelled = regionPickerInPage("start") as Promise<PageSelection | null>;
+    regionPickerInPage("cancel");
+    assert.equal(await cancelled, null);
+    assert.equal(removed, true);
   });
 
-  it("captures the selected fragment from the same connected tab", async () => {
-    mockChrome(async () => [{ id: target.tabId, url: target.url }], selection);
-    assert.deepEqual(await capturePageSelection(target), selection);
-    const prompt = promptWithSelections("한국어로 번역해 줘", [selection]);
-    assert.match(prompt, /한국어로 번역해 줘/);
-    assert.match(prompt, /"annotation":1/);
-    assert.match(prompt, /"selector":"main:nth-of-type\(1\) > p:nth-of-type\(2\)"/);
+  it("binds capture to the current tab, supports cancellation, and attaches the region to the prompt", async () => {
+    let currentUrl = target.url;
+    const actions: string[] = [];
+    mock("chrome", {
+      tabs: { query: async () => [{ id: target.tabId, url: currentUrl }] },
+      scripting: { executeScript: async ({ args }: { args: [string] }) => { actions.push(args[0]); return [{ result: args[0] === "start" ? region : null }]; } },
+    });
+    assert.deepEqual(await capturePageRegion(target), region);
+    await cancelPageRegion(target);
+    assert.deepEqual(actions, ["start", "cancel"]);
+    const prompt = promptWithSelections("한국어로 번역해 줘", [region]);
+    assert.match(prompt, /Attached page regions/);
+    assert.match(prompt, /"selector":"p:nth-of-type\(1\)"/);
     assert.match(prompt, /Hello <strong>world<\/strong>/);
+    currentUrl = "https://example.org/";
+    await assert.rejects(capturePageRegion(target), /페이지가 바뀌었습니다/);
     assert.equal(promptWithSelections("질문", []), "질문");
-  });
-
-  it("rejects an empty selection and a navigation during capture", async () => {
-    mockChrome(async () => [{ id: target.tabId, url: target.url }], null);
-    await assert.rejects(capturePageSelection(target), /텍스트를 드래그/);
-
-    let reads = 0;
-    mockChrome(async () => [{ id: target.tabId, url: ++reads === 1 ? target.url : "https://example.org/" }], selection);
-    await assert.rejects(capturePageSelection(target), /페이지가 바뀌었습니다/);
   });
 });
