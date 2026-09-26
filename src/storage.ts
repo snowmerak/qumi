@@ -2,24 +2,29 @@ import { emptyAgentState, type AgentState } from "./agent.ts";
 import { approvalPolicyFrom, type ApprovalPolicy } from "./browser-approval.ts";
 import { languagePreferenceFrom, type LanguagePreference } from "./i18n.ts";
 import type { ChatMessage, GatewaySettings, ModelMessage } from "./gateway.ts";
+import { validateMcpServer, type McpServerSettings } from "./mcp-tools.ts";
+import { parseSkill, type InstalledSkill } from "./skills.ts";
 
 export interface AppSettings extends GatewaySettings {
   approvalPolicy: ApprovalPolicy;
   language: LanguagePreference;
+  mcpServers: McpServerSettings[];
 }
 
 export interface SavedState {
   settings: AppSettings;
   messages: ChatMessage[];
   agent: AgentState;
+  skills: InstalledSkill[];
 }
 
 const storageKey = "qumiState";
 
 export const emptyState: SavedState = {
-  settings: { baseUrl: "", apiKey: "", model: "", apiMode: "chat_completions", contextWindowOverride: 0, approvalPolicy: "changes", language: "auto" },
+  settings: { baseUrl: "", apiKey: "", model: "", apiMode: "chat_completions", contextWindowOverride: 0, approvalPolicy: "changes", language: "auto", mcpServers: [] },
   messages: [],
   agent: emptyAgentState(),
+  skills: [],
 };
 
 function storedMessages(value: unknown): ChatMessage[] {
@@ -64,8 +69,14 @@ export async function loadState(): Promise<SavedState> {
         ? saved.settings.contextWindowOverride : 0,
       approvalPolicy: approvalPolicyFrom(saved.settings?.approvalPolicy),
       language: languagePreferenceFrom(saved.settings?.language),
+      mcpServers: Array.isArray(saved.settings?.mcpServers) ? saved.settings.mcpServers.flatMap((entry) => {
+        try { return [validateMcpServer(entry)]; } catch { return []; }
+      }) : [],
     },
     messages,
+    skills: Array.isArray(saved.skills) ? saved.skills.flatMap((entry) => {
+      try { return [parseSkill(entry.files)]; } catch { return []; }
+    }) : [],
     agent: {
       transcript: saved.agent ? modelMessages(agent.transcript) : oldContext,
       context: saved.agent ? modelMessages(agent.context) : oldContext,
@@ -74,7 +85,8 @@ export async function loadState(): Promise<SavedState> {
       providerOverhead: typeof agent.providerOverhead === "number" && agent.providerOverhead >= 0 ? agent.providerOverhead : 0,
       activeTask: agent.activeTask && typeof agent.activeTask.objective === "string" && agent.activeTask.objective.trim()
         ? { objective: agent.activeTask.objective, completionCriteria: Array.isArray(agent.activeTask.completionCriteria)
-          ? agent.activeTask.completionCriteria.filter((item): item is string => typeof item === "string") : [] }
+          ? agent.activeTask.completionCriteria.filter((item): item is string => typeof item === "string") : [],
+          ...(typeof agent.activeTask.skillKeywords === "string" ? { skillKeywords: agent.activeTask.skillKeywords } : {}) }
         : null,
     },
   };

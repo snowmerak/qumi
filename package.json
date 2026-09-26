@@ -9,13 +9,15 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test src/gateway.test.ts src/agent.test.ts src/page-context.test.ts src/page-selection.test.ts src/dom-tools.test.ts src/keyboard-tools.test.ts src/browser-turn-tools.test.ts src/browser-approval.test.ts src/execution-log.test.ts src/i18n.test.ts src/wait-tool.test.ts",
+    "test": "node --experimental-strip-types --test src/gateway.test.ts src/agent.test.ts src/page-context.test.ts src/page-selection.test.ts src/dom-tools.test.ts src/keyboard-tools.test.ts src/browser-turn-tools.test.ts src/browser-approval.test.ts src/execution-log.test.ts src/i18n.test.ts src/wait-tool.test.ts src/mcp-tools.test.ts src/skills.test.ts",
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {
+    "@modelcontextprotocol/client": "^2.1.0",
     "merak-protocol-design-system": "0.2.5",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/chrome": "^0.3.0",

@@ -2,6 +2,7 @@ import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { emptyAgentState, runTurn, type AgentTool, type AgentTraceEvent } from "./agent.ts";
 import type { GatewaySettings, ModelMessage } from "./gateway.ts";
+import { parseSkill } from "./skills.ts";
 
 const settings: GatewaySettings = { baseUrl: "http://127.0.0.1:53124/v1", apiKey: "", model: "test/model" };
 const originalFetch = globalThis.fetch;
@@ -16,6 +17,78 @@ function response(message: Record<string, unknown>, conversationId = ""): Respon
 }
 
 describe("Qumi agent loop", () => {
+  it("suggests relevant installed skills after task_start without preloading their body", async () => {
+    const skill = parseSkill({ "SKILL.md": "---\nname: article-translation\ndescription: Translate articles accurately.\n---\n\n# Private full instructions\nKeep links intact." });
+    const requests: Array<{ messages: ModelMessage[]; tools: Array<{ function: { name: string } }> }> = [];
+    globalThis.fetch = async (_, init) => {
+      const body = JSON.parse(String(init?.body));
+      requests.push(body);
+      if (body.tool_choice === "none") return response({ role: "assistant", content: "Acknowledged." });
+      return requests.length === 1
+        ? response({ role: "assistant", content: "", tool_calls: [{ id: "start", type: "function", function: { name: "task_start", arguments: '{"objective":"기사를 번역","skill_keywords":"translate article"}' } }] })
+        : requests.length === 2
+          ? response({ role: "assistant", content: "", tool_calls: [{ id: "read-skill", type: "function", function: { name: "get_skill", arguments: '{"id":"article-translation"}' } }] })
+          : response({ role: "assistant", content: "", tool_calls: [{ id: "complete", type: "function", function: { name: "task_complete", arguments: '{"outcome":"succeeded","summary":"Done"}' } }] });
+    };
+    await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "이 기사를 번역해줘", skills: [skill], signal: new AbortController().signal });
+    assert.ok(requests[0].tools.some((tool) => tool.function.name === "search_skills"));
+    assert.ok(requests[0].tools.some((tool) => tool.function.name === "get_skill"));
+    const hint = requests[1].messages.find((message) => message.role === "tool" && message.tool_call_id === "start")?.content ?? "";
+    assert.match(hint, /article-translation/);
+    assert.ok(!hint.includes("Keep links intact"));
+    assert.match(requests[2].messages.find((message) => message.role === "tool" && message.tool_call_id === "read-skill")?.content ?? "", /Keep links intact/);
+  });
+
+  it("places recent full skill reads before ordinary context after compaction", async () => {
+    const result = JSON.stringify({ skill: { id: "article-translation" }, path: "SKILL.md", content: "Keep headings and links intact." });
+    const old = "old page content ".repeat(1400);
+    const state = {
+      transcript: [] as ModelMessage[],
+      context: [
+        { role: "system", content: "base instructions" },
+        { role: "user", content: old },
+        { role: "assistant", content: "", tool_calls: [{ id: "skill-read", type: "function", function: { name: "get_skill", arguments: '{"id":"article-translation"}' } }] },
+        { role: "tool", tool_call_id: "skill-read", content: result },
+      ] as ModelMessage[],
+      conversationId: "old", providerOverhead: 0,
+    };
+    const requests: Array<{ messages: ModelMessage[] }> = [];
+    globalThis.fetch = async (_, init) => {
+      const body = JSON.parse(String(init?.body));
+      requests.push(body);
+      return body.messages[0].content.startsWith("Summarize the conversation data")
+        ? response({ role: "assistant", content: '{"current_request":["Continue translation"],"facts":[]}' })
+        : response({ role: "assistant", content: "Continued" });
+    };
+    const done = await runTurn({ settings, contextWindow: 8000, state, prompt: "Continue translation", signal: new AbortController().signal });
+    assert.equal(done.compactions, 1);
+    const context = requests.at(-1)!.messages;
+    const summaryIndex = context.findIndex((message) => message.name === "qumi_context_summary");
+    assert.equal(context[summaryIndex + 1].tool_calls?.[0].function.name, "get_skill");
+    assert.equal(context[summaryIndex + 2].content, result);
+  });
+
+  it("leaves room for a summary when a recent skill read is too large", async () => {
+    const old = "old page content ".repeat(650);
+    const state = {
+      transcript: [] as ModelMessage[],
+      context: [
+        { role: "system", content: "base" }, { role: "user", content: old },
+        { role: "assistant", content: "", tool_calls: [{ id: "read", type: "function", function: { name: "get_skill", arguments: '{"id":"long"}' } }] },
+        { role: "tool", tool_call_id: "read", content: JSON.stringify({ skill: { id: "long" }, path: "SKILL.md", content: "skill text ".repeat(100) }) },
+      ] as ModelMessage[], conversationId: "", providerOverhead: 0,
+    };
+    globalThis.fetch = async (_, init) => {
+      const body = JSON.parse(String(init?.body));
+      return body.messages[0].content.startsWith("Summarize the conversation data")
+        ? response({ role: "assistant", content: '{"current_request":["Continue"],"facts":[]}' })
+        : response({ role: "assistant", content: "Continued" });
+    };
+    const done = await runTurn({ settings, contextWindow: 4000, state, prompt: "Continue", signal: new AbortController().signal });
+    assert.equal(done.compactions, 1);
+    assert.ok(!done.state.context.some((message) => message.tool_call_id === "read"));
+  });
+
   it("requires task_complete after task_start and returns its structured result", async () => {
     const requests: Array<{ messages: ModelMessage[]; tools?: Array<{ function: { name: string } }>; tool_choice?: string; conversation_id?: string }> = [];
     const trace: AgentTraceEvent[] = [];

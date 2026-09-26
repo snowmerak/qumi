@@ -4,6 +4,7 @@ import { translate, type Locale } from "./i18n.ts";
 export interface ActiveTask {
   objective: string;
   completionCriteria: string[];
+  skillKeywords?: string;
 }
 
 export interface TaskCompletion {
@@ -23,6 +24,7 @@ export const taskTools: ToolDefinition[] = [
     description: "Start an explicit task for work requiring tools or multiple steps. A short direct answer does not need this. Once started, finish with task_complete.",
     parameters: { type: "object", properties: {
       objective: { type: "string" }, completion_criteria: stringArray,
+      skill_keywords: { type: "string", description: "Concise English search keywords for relevant Agent Skills, especially when the objective is not in English." },
     }, required: ["objective"], additionalProperties: false },
   } },
   { type: "function", function: {
@@ -50,10 +52,11 @@ function strings(value: unknown, name: string): string[] {
 }
 
 export function parseTaskStart(value: unknown): ActiveTask {
-  const args = objectArguments(value, ["objective", "completion_criteria"]);
+  const args = objectArguments(value, ["objective", "completion_criteria", "skill_keywords"]);
   const objective = typeof args.objective === "string" ? args.objective.trim() : "";
   if (!objective) throw new Error("objective가 필요합니다.");
-  return { objective, completionCriteria: strings(args.completion_criteria, "completion_criteria") };
+  if (args.skill_keywords !== undefined && typeof args.skill_keywords !== "string") throw new Error("skill_keywords는 문자열이어야 합니다.");
+  return { objective, completionCriteria: strings(args.completion_criteria, "completion_criteria"), ...(args.skill_keywords ? { skillKeywords: args.skill_keywords.trim().slice(0, 400) } : {}) };
 }
 
 export function parseTaskCompletion(value: unknown): TaskCompletion {

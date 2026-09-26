@@ -36,6 +36,34 @@ const messages = {
   approvalChanges: { en: "Confirm changes only", ko: "변경 작업만 확인", ja: "変更操作のみ確認", zh: "仅确认更改操作" },
   approvalNone: { en: "Run without confirmation", ko: "확인 없이 실행", ja: "確認せずに実行", zh: "无需确认直接执行" },
   approvalHint: { en: "Reads include page, DOM and tab lists. Changes include input, clicks and tab navigation. Chrome site access is requested separately.", ko: "읽기는 페이지·DOM·탭 목록 조회, 변경은 입력·클릭·탭 이동입니다. Chrome 사이트 접근 권한은 별도로 요청됩니다.", ja: "読み取りはページ・DOM・タブ一覧、変更は入力・クリック・タブ移動です。Chrome のサイトアクセス権は別に要求されます。", zh: "读取包括页面、DOM 和标签页列表；更改包括输入、点击和标签页切换。Chrome 网站访问权限另行请求。" },
+  mcpServers: { en: "MCP servers", ko: "MCP 서버", ja: "MCP サーバー", zh: "MCP 服务器" },
+  mcpHint: { en: "Register a Streamable HTTP endpoint. Optional request headers are JSON, for example {\"Authorization\":\"Bearer …\"}. MCP tool calls use the change confirmation setting.", ko: "Streamable HTTP 주소를 등록합니다. 요청 헤더는 JSON으로 입력하세요. 예: {\"Authorization\":\"Bearer …\"}. MCP 도구 호출에는 변경 작업 확인 설정이 적용됩니다.", ja: "Streamable HTTP エンドポイントを登録します。任意のリクエストヘッダーは JSON で入力します。例: {\"Authorization\":\"Bearer …\"}。MCP ツールには変更操作の確認設定が適用されます。", zh: "注册 Streamable HTTP 端点。可选请求头使用 JSON，例如 {\"Authorization\":\"Bearer …\"}。MCP 工具调用遵循更改确认设置。" },
+  mcpName: { en: "Server name", ko: "서버 이름", ja: "サーバー名", zh: "服务器名称" },
+  mcpUrl: { en: "MCP endpoint URL", ko: "MCP 주소", ja: "MCP エンドポイント URL", zh: "MCP 端点 URL" },
+  mcpHeaders: { en: "Request headers (JSON)", ko: "요청 헤더 (JSON)", ja: "リクエストヘッダー（JSON）", zh: "请求头（JSON）" },
+  mcpHeadersInvalid: { en: "Headers must be a JSON object of strings.", ko: "헤더는 문자열 값으로 된 JSON 객체여야 합니다.", ja: "ヘッダーは文字列値の JSON オブジェクトで指定してください。", zh: "请求头必须是值为字符串的 JSON 对象。" },
+  mcpIdInvalid: { en: "Use a server name starting with a letter or number, up to 32 characters.", ko: "MCP 서버 이름은 영문·숫자로 시작하고 32자 이하여야 합니다.", ja: "サーバー名は英数字で始め、32 文字以内にしてください。", zh: "服务器名称须以字母或数字开头，最多 32 个字符。" },
+  mcpUrlInvalid: { en: "Enter a valid MCP server URL.", ko: "MCP 서버 URL이 올바르지 않습니다.", ja: "有効な MCP サーバー URL を入力してください。", zh: "请输入有效的 MCP 服务器 URL。" },
+  mcpHttpRequired: { en: "MCP servers require an HTTP(S) URL.", ko: "MCP 서버에는 HTTP(S) URL이 필요합니다.", ja: "MCP サーバーには HTTP(S) URL が必要です。", zh: "MCP 服务器需要 HTTP(S) URL。" },
+  mcpUrlCredentials: { en: "Do not include credentials or a fragment in the MCP URL.", ko: "MCP URL에 사용자 정보나 fragment를 넣을 수 없습니다.", ja: "MCP URL に認証情報やフラグメントを含めないでください。", zh: "MCP URL 中不能包含凭据或片段。" },
+  mcpIdExists: { en: "That MCP server name is already registered.", ko: "같은 이름의 MCP 서버가 이미 있습니다.", ja: "同じ名前の MCP サーバーは登録済みです。", zh: "该名称的 MCP 服务器已注册。" },
+  mcpAddFailed: { en: "Could not add the MCP server.", ko: "MCP 서버를 추가하지 못했습니다.", ja: "MCP サーバーを追加できませんでした。", zh: "无法添加 MCP 服务器。" },
+  mcpConnectFailed: { en: "MCP connection failed", ko: "MCP 연결 실패", ja: "MCP 接続に失敗", zh: "MCP 连接失败" },
+  mcpConnected: { en: "Connected. Found {count} tools.", ko: "연결됨. 도구 {count}개를 찾았습니다.", ja: "接続しました。ツール {count} 件。", zh: "已连接。找到 {count} 个工具。" },
+  mcpActionApproval: { en: "Run MCP tool", ko: "MCP 도구 실행", ja: "MCP ツールを実行", zh: "运行 MCP 工具" },
+  addMcpServer: { en: "Add MCP server", ko: "MCP 서버 추가", ja: "MCP サーバーを追加", zh: "添加 MCP 服务器" },
+  remove: { en: "Remove", ko: "제거", ja: "削除", zh: "移除" },
+  agentSkills: { en: "Agent Skills", ko: "Agent Skills", ja: "Agent Skills", zh: "Agent Skills" },
+  skillHint: { en: "Import a SKILL.md file or a skill folder with text resources. Qumi searches installed skills and reads full instructions only when needed.", ko: "SKILL.md 파일이나 텍스트 리소스가 포함된 스킬 폴더를 가져오세요. Qumi는 설치된 스킬을 검색하고 필요할 때만 본문을 읽습니다.", ja: "SKILL.md またはテキストリソースを含むスキルフォルダーを読み込みます。Qumi は必要なときだけ本文を取得します。", zh: "导入 SKILL.md 或包含文本资源的技能文件夹。Qumi 搜索已安装技能，仅在需要时读取全文。" },
+  importSkillFile: { en: "Import SKILL.md", ko: "SKILL.md 가져오기", ja: "SKILL.md を読み込む", zh: "导入 SKILL.md" },
+  importSkillFolder: { en: "Import skill folder", ko: "스킬 폴더 가져오기", ja: "スキルフォルダーを読み込む", zh: "导入技能文件夹" },
+  skillFileMissing: { en: "The selected files do not contain SKILL.md.", ko: "선택한 파일에 SKILL.md가 없습니다.", ja: "選択したファイルに SKILL.md がありません。", zh: "所选文件中没有 SKILL.md。" },
+  skillFrontmatterMissing: { en: "SKILL.md needs YAML frontmatter.", ko: "SKILL.md에 YAML frontmatter가 필요합니다.", ja: "SKILL.md には YAML frontmatter が必要です。", zh: "SKILL.md 需要 YAML frontmatter。" },
+  skillMetadataInvalid: { en: "Skill metadata is invalid.", ko: "스킬 메타데이터가 올바르지 않습니다.", ja: "スキルのメタデータが無効です。", zh: "技能元数据无效。" },
+  skillNameDescriptionInvalid: { en: "A skill needs a valid name and description.", ko: "스킬에는 유효한 name과 description이 필요합니다.", ja: "スキルには有効な name と description が必要です。", zh: "技能需要有效的 name 和 description。" },
+  skillInstallTooLarge: { en: "A skill exceeds the 5 MiB install limit.", ko: "스킬 전체 크기가 5 MiB를 초과합니다.", ja: "スキル全体が 5 MiB の上限を超えています。", zh: "技能总大小超过 5 MiB 上限。" },
+  skillImportFailed: { en: "Could not import the skill.", ko: "스킬을 가져오지 못했습니다.", ja: "スキルを読み込めませんでした。", zh: "无法导入技能。" },
+  skillsInstalled: { en: "Installed {count} skill(s).", ko: "스킬 {count}개를 설치했습니다.", ja: "スキル {count} 件をインストールしました。", zh: "已安装 {count} 个技能。" },
   executionLog: { en: "Execution log", ko: "실행 진단 로그", ja: "実行ログ", zh: "执行日志" },
   logHint: { en: "Stores up to 10,000 events from the last 7 days in this browser. Prompts, page content and API keys are not logged.", ko: "최근 7일, 최대 10,000개 이벤트를 이 브라우저에 저장합니다. 프롬프트·페이지 내용·API 키는 기록하지 않습니다.", ja: "直近 7 日間のイベントを最大 10,000 件、このブラウザーに保存します。プロンプト、ページ内容、API キーは記録しません。", zh: "在此浏览器中保存最近 7 天最多 10,000 条事件。不记录提示词、页面内容或 API 密钥。" },
   downloadJson: { en: "Download JSON", ko: "JSON 다운로드", ja: "JSON をダウンロード", zh: "下载 JSON" },
@@ -201,9 +229,11 @@ export function localizeApprovalDetail(locale: Locale, detail: string): string {
 }
 
 export function localizeKnownError(locale: Locale, message: string): string {
-  const keys: MessageKey[] = ["readSettingsFailed", "saveConversationFailed", "openWebPage", "waitForPageLoad", "pageConnectFailed", "pageChanged", "pageChangedSelection", "noPageAccess", "extensionRequired", "siteAccessDenied", "regionCaptureFailed", "gatewayUrlInvalid", "gatewayUrlRequired", "gatewayModelFormat", "gatewayEmptyResponse", "gatewayStreamUnreadable", "gatewayToolFormat", "gatewayResponsesFormat", "gatewayResponsesStreamIncomplete", "gatewayResponsesTextMissing", "gatewayTextMissing", "codexResponsesUnsupported", "modelRequired", "tooManyRegions", "regionReadFailed", "requestCancelled", "responseFailed", "logSaveFailed", "gatewayConnectFailed", "contextLengthMissing", "noAvailableModels"];
+  const keys: MessageKey[] = ["readSettingsFailed", "saveConversationFailed", "openWebPage", "waitForPageLoad", "pageConnectFailed", "pageChanged", "pageChangedSelection", "noPageAccess", "extensionRequired", "siteAccessDenied", "regionCaptureFailed", "gatewayUrlInvalid", "gatewayUrlRequired", "gatewayModelFormat", "gatewayEmptyResponse", "gatewayStreamUnreadable", "gatewayToolFormat", "gatewayResponsesFormat", "gatewayResponsesStreamIncomplete", "gatewayResponsesTextMissing", "gatewayTextMissing", "codexResponsesUnsupported", "modelRequired", "tooManyRegions", "regionReadFailed", "requestCancelled", "responseFailed", "logSaveFailed", "gatewayConnectFailed", "contextLengthMissing", "noAvailableModels", "mcpIdInvalid", "mcpUrlInvalid", "mcpHttpRequired", "mcpUrlCredentials", "skillFrontmatterMissing", "skillMetadataInvalid", "skillNameDescriptionInvalid", "skillInstallTooLarge"];
   const key = keys.find((candidate) => messages[candidate].ko === message);
   if (key) return translate(locale, key);
+  if (message.startsWith("MCP 헤더")) return translate(locale, "mcpHeadersInvalid");
+  if (message.startsWith("잘못된 스킬 파일 경로:") || message.endsWith("파일이 1 MiB를 초과합니다.")) return translate(locale, "skillImportFailed");
   const statusPatterns: [RegExp, MessageKey][] = [
     [/^Gateway 요청에 실패했습니다\. \((\d+)\)$/, "gatewayHttpError"],
     [/^Gateway Responses 요청에 실패했습니다\. \((\d+)\)$/, "gatewayResponsesHttpError"],

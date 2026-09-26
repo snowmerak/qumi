@@ -122,3 +122,15 @@
 @media (prefers-reduced-motion: reduce) {
   .chat-history { scroll-behavior: auto; }
 }
+.integration-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.5rem 0;
+}
+
+.integration-row span { flex: 1; min-width: 0; }
+.integration-row small { display: block; overflow-wrap: anywhere; opacity: 0.75; }
+.integration-upload { position: relative; cursor: pointer; margin-right: 0.5rem; }
+.integration-upload input { position: absolute; width: 1px; height: 1px; opacity: 0; }

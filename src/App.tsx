@@ -14,6 +14,8 @@ import { canReadPages, capturePageTarget, getActiveBrowserTab, getActivePageCand
 import { promptWithSelections, type PageSelection } from "./page-selection";
 import { cancelPageRegion, capturePageRegion } from "./page-region";
 import { formatNumber, languagePreferenceFrom, localizeApprovalDetail, localizeApprovalTitle, localizeKnownError, resolveLocale, translate, type LanguagePreference, type Locale, type MessageKey } from "./i18n";
+import { connectMcpServer, connectMcpServers, validateMcpServer } from "./mcp-tools";
+import { installSkillFiles, type InstalledSkill } from "./skills";
 
 type Connection = "checking" | "connected" | "disconnected";
 type PendingAction = { title: string; detail: string; decide: (approved: boolean) => void };
@@ -62,12 +64,14 @@ interface SettingsViewProps {
   availableModels: GatewayModel[];
   onClose: () => void;
   onSave: (settings: AppSettings, models: GatewayModel[]) => void;
+  skills: InstalledSkill[];
+  onSkillsChange: (skills: InstalledSkill[]) => void;
   onExportLog: () => Promise<number>;
   onClearLog: () => Promise<void>;
   onLanguageChange: (language: LanguagePreference) => void;
 }
 
-function SettingsView({ settings, availableModels, onClose, onSave, onExportLog, onClearLog, onLanguageChange }: SettingsViewProps) {
+function SettingsView({ settings, availableModels, onClose, onSave, skills, onSkillsChange, onExportLog, onClearLog, onLanguageChange }: SettingsViewProps) {
   const [draft, setDraft] = useState(settings);
   const [checkedModels, setCheckedModels] = useState<GatewayModel[] | null>(null);
   const [testing, setTesting] = useState(false);
@@ -75,6 +79,11 @@ function SettingsView({ settings, availableModels, onClose, onSave, onExportLog,
   const [isError, setIsError] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [logMessage, setLogMessage] = useState("");
+  const [mcpId, setMcpId] = useState("");
+  const [mcpUrl, setMcpUrl] = useState("");
+  const [mcpHeaders, setMcpHeaders] = useState("{}");
+  const [mcpMessage, setMcpMessage] = useState("");
+  const [skillMessage, setSkillMessage] = useState("");
   const locale = resolveLocale(draft.language);
   const tr = (key: MessageKey, variables?: Record<string, string | number>) => translate(locale, key, variables);
   const sameGateway = draft.baseUrl === settings.baseUrl && draft.apiKey === settings.apiKey;
@@ -87,6 +96,33 @@ function SettingsView({ settings, availableModels, onClose, onSave, onExportLog,
   }
 
   const selectedModel = models.find((model) => model.id === draft.model);
+
+  function addMcpServer() {
+    try {
+      const parsed: unknown = JSON.parse(mcpHeaders);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.values(parsed).some((value) => typeof value !== "string")) throw new Error(tr("mcpHeadersInvalid"));
+      const server = validateMcpServer({ id: mcpId.trim(), url: mcpUrl.trim(), headers: parsed as Record<string, string> });
+      if (draft.mcpServers.some((current) => current.id === server.id)) throw new Error(tr("mcpIdExists"));
+      setDraft((current) => ({ ...current, mcpServers: [...current.mcpServers, server] }));
+      setMcpId(""); setMcpUrl(""); setMcpHeaders("{}"); setMcpMessage("");
+    } catch (error) { setMcpMessage(error instanceof Error ? localizeKnownError(locale, error.message) : tr("mcpAddFailed")); }
+  }
+
+  async function importSkills(files: FileList | null) {
+    if (!files?.length) return;
+    try {
+      const imported = await installSkillFiles(files);
+      if (!imported.length) throw new Error(tr("skillFileMissing"));
+      const next = [...skills];
+      for (const skill of imported) {
+        const index = next.findIndex((current) => current.id === skill.id);
+        if (index >= 0) next[index] = skill;
+        else next.push(skill);
+      }
+      onSkillsChange(next);
+      setSkillMessage(tr("skillsInstalled", { count: imported.length }));
+    } catch (error) { setSkillMessage(error instanceof Error ? localizeKnownError(locale, error.message) : tr("skillImportFailed")); }
+  }
 
   async function checkConnection(): Promise<GatewayModel[] | null> {
     setTesting(true);
@@ -198,6 +234,28 @@ function SettingsView({ settings, availableModels, onClose, onSave, onExportLog,
           <p id="approval-policy-hint" className="mp-field__hint">{tr("approvalHint")}</p>
         </div>
         <div className="mp-field">
+          <span className="mp-field__label">{tr("mcpServers")}</span>
+          <p className="mp-field__hint">{tr("mcpHint")}</p>
+          {draft.mcpServers.map((server) => <div className="integration-row" key={server.id}>
+            <span><strong>{server.id}</strong><small>{server.url}</small></span>
+            <button className="mp-button mp-button--ghost" type="button" onClick={() => void connectMcpServer(server, AbortSignal.timeout(10_000)).then(async (connection) => { setMcpMessage(tr("mcpConnected", { count: connection.tools.length })); await connection.close(); }).catch((error) => setMcpMessage(error instanceof Error ? error.message : tr("mcpConnectFailed")))}>{tr("checkConnection")}</button>
+            <button className="mp-button mp-button--ghost" type="button" onClick={() => setDraft((current) => ({ ...current, mcpServers: current.mcpServers.filter((item) => item.id !== server.id) }))}>{tr("remove")}</button>
+          </div>)}
+          <input className="mp-input" type="text" value={mcpId} onChange={(event) => setMcpId(event.target.value)} placeholder={tr("mcpName")} aria-label={tr("mcpName")} />
+          <input className="mp-input" type="url" value={mcpUrl} onChange={(event) => setMcpUrl(event.target.value)} placeholder="https://example.com/mcp" aria-label={tr("mcpUrl")} />
+          <textarea className="mp-input" value={mcpHeaders} onChange={(event) => setMcpHeaders(event.target.value)} aria-label={tr("mcpHeaders")} rows={2} />
+          <button className="mp-button mp-button--secondary" type="button" onClick={addMcpServer}>{tr("addMcpServer")}</button>
+          {mcpMessage && <p className="mp-field__hint" role="status">{mcpMessage}</p>}
+        </div>
+        <div className="mp-field">
+          <span className="mp-field__label">{tr("agentSkills")}</span>
+          <p className="mp-field__hint">{tr("skillHint")}</p>
+          {skills.map((skill) => <div className="integration-row" key={skill.id}><span><strong>{skill.name}</strong><small>{skill.description}</small></span><button className="mp-button mp-button--ghost" type="button" onClick={() => onSkillsChange(skills.filter((item) => item.id !== skill.id))}>{tr("remove")}</button></div>)}
+          <label className="mp-button mp-button--secondary integration-upload">{tr("importSkillFile")}<input type="file" accept=".md,text/markdown" onChange={(event) => { void importSkills(event.target.files); event.target.value = ""; }} /></label>
+          <label className="mp-button mp-button--secondary integration-upload">{tr("importSkillFolder")}<input type="file" multiple {...{ webkitdirectory: "" }} onChange={(event) => { void importSkills(event.target.files); event.target.value = ""; }} /></label>
+          {skillMessage && <p className="mp-field__hint" role="status">{skillMessage}</p>}
+        </div>
+        <div className="mp-field">
           <span className="mp-field__label">{tr("executionLog")}</span>
           <p className="mp-field__hint">{tr("logHint")}</p>
           <div className="execution-log-actions">
@@ -218,6 +276,7 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [view, setView] = useState<"chat" | "settings">("chat");
   const [settings, setSettings] = useState<AppSettings>(emptyState.settings);
+  const [skills, setSkills] = useState<InstalledSkill[]>([]);
   const locale = resolveLocale(settings.language);
   const tr = (key: MessageKey, variables?: Record<string, string | number>) => translate(locale, key, variables);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -251,6 +310,7 @@ export function App() {
     void loadState().then((saved) => {
       if (!active) return;
       setSettings(saved.settings);
+      setSkills(saved.skills);
       setMessages(saved.messages);
       setAgent(saved.agent);
       setReady(true);
@@ -275,8 +335,8 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (ready) void saveState({ settings, messages, agent }).catch(() => setError(tr("saveConversationFailed")));
-  }, [ready, settings, messages, agent]);
+    if (ready) void saveState({ settings, messages, agent, skills }).catch(() => setError(tr("saveConversationFailed")));
+  }, [ready, settings, messages, agent, skills]);
 
   useEffect(() => {
     messagesEnd.current?.scrollIntoView({ behavior: sending ? "auto" : "smooth" });
@@ -469,20 +529,28 @@ export function App() {
     setProgress(tr("responding"));
     setError("");
     setSending(true);
+    let mcpConnection: Awaited<ReturnType<typeof connectMcpServers>> | null = null;
     try {
+      mcpConnection = await connectMcpServers(settings.mcpServers, controller.signal);
+      controller.signal.throwIfAborted();
+      if (mcpConnection.errors.length) setError(`${tr("mcpConnectFailed")}: ${mcpConnection.errors.join("; ")}`);
       const browserTab = await getActiveBrowserTab();
       const connectedPage = pageTarget && browserTab?.tabId === pageTarget.tabId && browserTab.url === pageTarget.url ? pageTarget : null;
       const result = await runTurn({
-        settings, contextWindow, state: agent, prompt: promptWithSelections(content, selections), signal: controller.signal, locale,
+        settings, contextWindow, state: agent, prompt: promptWithSelections(content, selections), signal: controller.signal, locale, skills,
         onTrace: executionLog.record,
-        tools: browserTab ? browserTurnTools(browserTab, connectedPage, {
+        tools: [...mcpConnection.tools.map((tool) => ({ ...tool, execute: async (args: unknown, signal: AbortSignal) => {
+          if (!await approveChange(tr("mcpActionApproval"), `${tool.definition.function.name}\n${JSON.stringify(args)}`, signal)) return JSON.stringify({ approved: false });
+          signal.throwIfAborted();
+          return tool.execute(args, signal);
+        } })), ...(browserTab ? browserTurnTools(browserTab, connectedPage, {
           approvalPolicy: settings.approvalPolicy,
           approveRead: approveAction,
           approveChange,
           approveNavigation,
           onNavigated: () => setPageTarget(null),
           maxResultBytes: Math.max(1_024, Math.min(48_000, contextWindow - 512)),
-        }) : [],
+        }) : [])],
         onEvent: (event) => {
           if (controller.signal.aborted) return;
           if (event.type === "model") setProgress(tr("waitingForModel"));
@@ -507,6 +575,7 @@ export function App() {
       setDraft(content);
       setError(controller.signal.aborted ? tr("requestCancelled") : cause instanceof Error ? localizeKnownError(locale, cause.message) : tr("responseFailed"));
     } finally {
+      if (mcpConnection) void mcpConnection.close();
       void executionLog.finish().catch(() => setError((current) => current || tr("logSaveFailed")));
       requestController.current = null;
       setPendingPrompt("");
@@ -532,7 +601,7 @@ export function App() {
       </header>
 
       {view === "settings" ? (
-        <SettingsView settings={settings} availableModels={models} onClose={() => setView("chat")} onSave={saveSettings} onExportLog={exportLog} onClearLog={clearExecutionLog} onLanguageChange={(language) => { setSettings((current) => ({ ...current, language })); setError(""); setPageError(""); }} />
+        <SettingsView settings={settings} availableModels={models} skills={skills} onSkillsChange={setSkills} onClose={() => setView("chat")} onSave={saveSettings} onExportLog={exportLog} onClearLog={clearExecutionLog} onLanguageChange={(language) => { setSettings((current) => ({ ...current, language })); setError(""); setPageError(""); }} />
       ) : (
         <>
           <div className="model-bar">
