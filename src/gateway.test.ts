@@ -59,6 +59,27 @@ describe("Q Gateway client", () => {
     assert.equal(reply.cachedTokens, 12);
   });
 
+  it("cancels an open Chat Completions stream when the turn is stopped", async () => {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let cancelled = false;
+    globalThis.fetch = async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'));
+      },
+      cancel() { cancelled = true; },
+    }), { headers: { "Content-Type": "text/event-stream" } });
+    const controller = new AbortController();
+    const pending = requestModel(settings, [{ role: "user", content: "hi" }], [], "", controller.signal, () => controller.abort(new Error("stopped")));
+    const outcome = await Promise.race([
+      pending.then(() => "resolved", () => "rejected"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("hung"), 150)),
+    ]);
+    if (outcome === "hung") streamController?.close();
+    assert.equal(outcome, "rejected");
+    assert.equal(cancelled, true);
+  });
+
   it("streams thinking separately from the final answer", async () => {
     const events = [
       'data: {"choices":[{"phase":"commentary","delta":{"content":"계획 "}}]}\n\n',
@@ -207,6 +228,27 @@ describe("Q Gateway client", () => {
     assert.equal(reply.message.tool_calls?.[0].id, "call_2");
     assert.equal(reply.promptTokens, 100);
     assert.equal(reply.cachedTokens, 25);
+  });
+
+  it("cancels an open Responses stream when the turn is stopped", async () => {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let cancelled = false;
+    globalThis.fetch = async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"partial"}\n\n'));
+      },
+      cancel() { cancelled = true; },
+    }), { headers: { "Content-Type": "text/event-stream" } });
+    const controller = new AbortController();
+    const pending = requestModel({ ...settings, apiMode: "responses" }, [{ role: "user", content: "hi" }], [], "", controller.signal, () => controller.abort(new Error("stopped")));
+    const outcome = await Promise.race([
+      pending.then(() => "resolved", () => "rejected"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("hung"), 150)),
+    ]);
+    if (outcome === "hung") streamController?.close();
+    assert.equal(outcome, "rejected");
+    assert.equal(cancelled, true);
   });
 
   it("keeps Codex on Chat Completions until its Responses adapter can continue tools", async () => {

@@ -198,6 +198,21 @@ describe("Qumi agent loop", () => {
     assert.equal(result.state.transcript.at(-1)?.content, "완료");
   });
 
+  it("does not complete a turn cancelled while a response chunk is arriving", async () => {
+    globalThis.fetch = async () => new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\ndata: [DONE]\n\n', {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+    const controller = new AbortController();
+    const trace: AgentTraceEvent[] = [];
+    await assert.rejects(runTurn({
+      settings, contextWindow: 16000, state: emptyAgentState(), prompt: "Answer", signal: controller.signal,
+      onEvent: (event) => { if (event.type === "delta") controller.abort(new Error("cancelled")); },
+      onTrace: (event) => trace.push(event),
+    }), /cancelled/);
+    assert.equal(trace.at(-1)?.event, "turn_failed");
+    assert.equal(trace.at(-1)?.reason, "cancelled");
+  });
+
   it("continues past the former model-round and tool-call caps", async () => {
     let rounds = 0;
     let executed = 0;

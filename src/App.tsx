@@ -484,6 +484,7 @@ export function App() {
           maxResultBytes: Math.max(1_024, Math.min(48_000, contextWindow - 512)),
         }) : [],
         onEvent: (event) => {
+          if (controller.signal.aborted) return;
           if (event.type === "model") setProgress(tr("waitingForModel"));
           if (event.type === "thinking" && !responseStarted.current) {
             setProgress(tr("thinkingEllipsis"));

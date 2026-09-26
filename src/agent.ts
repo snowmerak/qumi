@@ -268,6 +268,7 @@ async function compact(
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const reply = await requestModel(settings, request, [], "", signal);
+        signal.throwIfAborted();
         const parsed = checkpointFromText(reply.message.content);
         if (!checkpointKeys.some((key) => parsed[key]?.length)) throw new Error("압축 체크포인트가 비어 있습니다.");
         checkpoint = mergeCheckpoint(checkpoint, parsed);
@@ -345,6 +346,7 @@ export async function runTurn(options: {
         trace({ event: "compaction_started", round });
         onEvent?.({ type: "compacting" });
         state = await compact(state, settings, contextWindow, availableTools, controller.signal);
+        controller.signal.throwIfAborted();
         const continuation: ModelMessage = {
           role: "user",
           content: state.activeTask
@@ -365,6 +367,7 @@ export async function runTurn(options: {
         settings, state.context, availableTools.map((tool) => tool.definition), state.conversationId,
         controller.signal, (delta) => onEvent?.({ type: delta.kind === "thinking" ? "thinking" : "delta", text: delta.text }),
       );
+      controller.signal.throwIfAborted();
       trace({ event: "model_completed", round, durationMs: Math.round(performance.now() - modelStarted), promptTokens: reply.promptTokens, cachedTokens: reply.cachedTokens, toolCalls: reply.message.tool_calls?.length ?? 0, contentChars: reply.message.content.length });
       state.conversationId = reply.conversationId;
       if (reply.promptTokens > 0) {
@@ -417,6 +420,7 @@ export async function runTurn(options: {
             content = JSON.stringify(completion);
           } else {
             content = await tool!.execute(argumentsValue, controller.signal);
+            controller.signal.throwIfAborted();
           }
           if (content.length < 1000) {
             try { if ((JSON.parse(content) as { approved?: unknown }).approved === false) outcome = "denied"; } catch { /* Other tool output. */ }
@@ -454,6 +458,7 @@ export async function runTurn(options: {
             content: last.content + "\n\nThe host accepted this terminal result. The task is finished. Acknowledge briefly without further tool calls.",
           };
           const finalReply = await requestModel(settings, terminalMessages, availableTools.map((tool) => tool.definition), state.conversationId, controller.signal, undefined, "none");
+          controller.signal.throwIfAborted();
           trace({ event: "model_completed", round, durationMs: Math.round(performance.now() - modelStarted), promptTokens: finalReply.promptTokens, cachedTokens: finalReply.cachedTokens, toolCalls: finalReply.message.tool_calls?.length ?? 0, contentChars: finalReply.message.content.length });
           state.conversationId = finalReply.conversationId;
           state.context.push(finalReply.message);

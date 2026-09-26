@@ -152,9 +152,17 @@ function parseToolCall(value: unknown): ToolCall {
   return { id: call.id, type: "function", function: { name: call.function.name, arguments: call.function.arguments } };
 }
 
-async function readStreamedReply(response: Response, previousConversationId: string, onDelta: (delta: StreamDelta) => void, onChunk: () => void): Promise<ModelReply> {
+function cancelStreamOnAbort(reader: ReadableStreamDefaultReader<Uint8Array>, signal: AbortSignal): () => void {
+  const abort = () => { void reader.cancel(signal.reason).catch(() => {}); };
+  if (signal.aborted) abort();
+  else signal.addEventListener("abort", abort, { once: true });
+  return () => signal.removeEventListener("abort", abort);
+}
+
+async function readStreamedReply(response: Response, previousConversationId: string, onDelta: (delta: StreamDelta) => void, onChunk: () => void, signal: AbortSignal): Promise<ModelReply> {
   if (!response.body) throw new Error("Gateway 스트림을 읽을 수 없습니다.");
   const reader = response.body.getReader();
+  const stopWatching = cancelStreamOnAbort(reader, signal);
   const decoder = new TextDecoder();
   let buffer = "";
   let eventData: string[] = [];
@@ -218,15 +226,19 @@ async function readStreamedReply(response: Response, previousConversationId: str
   try {
     for (;;) {
       const { value, done } = await reader.read();
+      signal.throwIfAborted();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       consumeLines();
+      signal.throwIfAborted();
     }
     buffer += decoder.decode();
     consumeLines(true);
   } finally {
+    stopWatching();
     reader.releaseLock();
   }
+  signal.throwIfAborted();
   const toolCalls = [...calls.entries()].sort(([left], [right]) => left - right).map(([, call]) => parseToolCall(call));
   if (!content && toolCalls.length === 0) throw new Error("Gateway가 빈 응답을 반환했습니다.");
   return { message: { role: "assistant", content, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) }, conversationId, promptTokens, cachedTokens };
@@ -285,9 +297,10 @@ function parseResponseReply(body: unknown): ModelReply {
   };
 }
 
-async function readStreamedResponse(response: Response, onDelta: (delta: StreamDelta) => void): Promise<ModelReply> {
+async function readStreamedResponse(response: Response, onDelta: (delta: StreamDelta) => void, signal: AbortSignal): Promise<ModelReply> {
   if (!response.body) throw new Error("Gateway 스트림을 읽을 수 없습니다.");
   const reader = response.body.getReader();
+  const stopWatching = cancelStreamOnAbort(reader, signal);
   const decoder = new TextDecoder();
   let buffer = "";
   let eventData: string[] = [];
@@ -337,15 +350,19 @@ async function readStreamedResponse(response: Response, onDelta: (delta: StreamD
   try {
     for (;;) {
       const { value, done } = await reader.read();
+      signal.throwIfAborted();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       consumeLines();
+      signal.throwIfAborted();
     }
     buffer += decoder.decode();
     consumeLines(true);
   } finally {
+    stopWatching();
     reader.releaseLock();
   }
+  signal.throwIfAborted();
   if (!completed) throw new Error("Gateway Responses 스트림이 완료 이벤트 없이 끝났습니다.");
   const value = completed as { output?: unknown };
   const fallbackOutput = [...output.entries()].sort(([left], [right]) => left - right).map(([, item]) => item);
@@ -384,7 +401,7 @@ async function requestResponses(
     await readJson(response);
     throw new Error(`Gateway Responses 요청에 실패했습니다. (${response.status})`);
   }
-  if (onDelta && response.headers.get("Content-Type")?.includes("text/event-stream")) return readStreamedResponse(response, onDelta);
+  if (onDelta && response.headers.get("Content-Type")?.includes("text/event-stream")) return readStreamedResponse(response, onDelta, signal);
   return parseResponseReply(await readJson(response));
 }
 
@@ -424,7 +441,7 @@ async function requestModelOnce(
     throw new Error(`Gateway 요청에 실패했습니다. (${response.status})`);
   }
   if (onDelta && response.headers.get("Content-Type")?.includes("text/event-stream")) {
-    return readStreamedReply(response, conversationId, onDelta, onChunk || (() => {}));
+    return readStreamedReply(response, conversationId, onDelta, onChunk || (() => {}), signal);
   }
   return parseModelReply(await readJson(response), conversationId);
 }
