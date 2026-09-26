@@ -345,14 +345,14 @@ export async function runTurn(options: {
         trace({ event: "compaction_started", round });
         onEvent?.({ type: "compacting" });
         state = await compact(state, settings, contextWindow, availableTools, controller.signal);
-        if (state.activeTask) {
-          const reminder: ModelMessage = {
-            role: "user",
-            content: "A task was already started before context compaction. Continue it without calling task_start again, then call task_complete once when finished. Active task: " + JSON.stringify(state.activeTask),
-          };
-          state.context.push(reminder);
-          state.transcript.push(reminder);
-        }
+        const continuation: ModelMessage = {
+          role: "user",
+          content: state.activeTask
+            ? "A task was already started before context compaction. Continue it without calling task_start again, then call task_complete once when finished. Active task: " + JSON.stringify(state.activeTask)
+            : "Context compaction is complete. Continue the current request.",
+        };
+        state.context.push(continuation);
+        state.transcript.push(continuation);
         compactions++;
         trace({ event: "compaction_completed", round, durationMs: Math.round(performance.now() - compactStarted) });
       }

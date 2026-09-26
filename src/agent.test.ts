@@ -262,6 +262,11 @@ describe("Qumi agent loop", () => {
     assert.ok(requests.length >= 2);
     assert.ok(requests.slice(0, -1).every((request) => request.conversation_id === undefined));
     assert.equal(requests.at(-1)?.conversation_id, undefined);
+    const resumed = requests.at(-1)?.messages ?? [];
+    assert.equal(resumed.find((message) => message.name === "qumi_context_summary")?.role, "system");
+    assert.equal(resumed.at(-1)?.role, "user");
+    assert.match(resumed.at(-1)?.content ?? "", /Context compaction is complete\. Continue the current request\./);
+    assert.equal(resumed.filter((message) => message.content.includes("Context compaction is complete.")).length, 1);
     assert.equal(result.state.conversationId, "new_cache");
     assert.equal(state.conversationId, "old_cache");
   });
@@ -284,6 +289,7 @@ describe("Qumi agent loop", () => {
       if (body.tool_choice === "none") return response({ role: "assistant", content: "Acknowledged." });
       assert.match(body.messages.at(-1)?.content ?? "", /already started before context compaction/);
       assert.match(body.messages.at(-1)?.content ?? "", /Translate the article/);
+      assert.equal(body.messages.find((message: ModelMessage) => message.name === "qumi_context_summary")?.role, "system");
       return response({ role: "assistant", content: "", tool_calls: [{ id: "complete", type: "function", function: { name: "task_complete", arguments: '{"outcome":"succeeded","summary":"Article translated"}' } }] });
     };
     const result = await runTurn({ settings, contextWindow: 4000, state, prompt: "Continue", signal: new AbortController().signal });
