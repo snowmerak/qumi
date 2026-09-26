@@ -15,6 +15,7 @@ import { promptWithSelections, type PageSelection } from "./page-selection";
 import { cancelPageRegion, capturePageRegion } from "./page-region";
 import { formatNumber, languagePreferenceFrom, localizeApprovalDetail, localizeApprovalTitle, localizeKnownError, resolveLocale, translate, type LanguagePreference, type Locale, type MessageKey } from "./i18n";
 import { connectMcpServer, connectMcpServers, validateMcpServer } from "./mcp-tools";
+import { forgetMcpAuthorization } from "./mcp-oauth";
 import { installSkillFiles, type InstalledSkill } from "./skills";
 
 type Connection = "checking" | "connected" | "disconnected";
@@ -82,7 +83,12 @@ function SettingsView({ settings, availableModels, onClose, onSave, skills, onSk
   const [mcpId, setMcpId] = useState("");
   const [mcpUrl, setMcpUrl] = useState("");
   const [mcpHeaders, setMcpHeaders] = useState("{}");
+  const [mcpAuthMode, setMcpAuthMode] = useState<"headers" | "oauth">("headers");
+  const [mcpClientId, setMcpClientId] = useState("");
+  const [mcpMetadataUrl, setMcpMetadataUrl] = useState("");
+  const [mcpScope, setMcpScope] = useState("");
   const [mcpMessage, setMcpMessage] = useState("");
+  const [mcpBusy, setMcpBusy] = useState(false);
   const [skillMessage, setSkillMessage] = useState("");
   const locale = resolveLocale(draft.language);
   const tr = (key: MessageKey, variables?: Record<string, string | number>) => translate(locale, key, variables);
@@ -101,11 +107,39 @@ function SettingsView({ settings, availableModels, onClose, onSave, skills, onSk
     try {
       const parsed: unknown = JSON.parse(mcpHeaders);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.values(parsed).some((value) => typeof value !== "string")) throw new Error(tr("mcpHeadersInvalid"));
-      const server = validateMcpServer({ id: mcpId.trim(), url: mcpUrl.trim(), headers: parsed as Record<string, string> });
+      const server = validateMcpServer({
+        id: mcpId.trim(), url: mcpUrl.trim(), headers: parsed as Record<string, string>,
+        ...(mcpAuthMode === "oauth" ? { auth: { type: "oauth" as const, clientId: mcpClientId, clientMetadataUrl: mcpMetadataUrl, scope: mcpScope } } : {}),
+      });
       if (draft.mcpServers.some((current) => current.id === server.id)) throw new Error(tr("mcpIdExists"));
       setDraft((current) => ({ ...current, mcpServers: [...current.mcpServers, server] }));
-      setMcpId(""); setMcpUrl(""); setMcpHeaders("{}"); setMcpMessage("");
+      setMcpId(""); setMcpUrl(""); setMcpHeaders("{}"); setMcpAuthMode("headers");
+      setMcpClientId(""); setMcpMetadataUrl(""); setMcpScope(""); setMcpMessage("");
     } catch (error) { setMcpMessage(error instanceof Error ? localizeKnownError(locale, error.message) : tr("mcpAddFailed")); }
+  }
+
+  async function checkMcpServer(server: AppSettings["mcpServers"][number], interactive: boolean): Promise<void> {
+    setMcpBusy(true);
+    setMcpMessage("");
+    try {
+      const connection = await connectMcpServer(server, interactive ? new AbortController().signal : AbortSignal.timeout(10_000), interactive);
+      setMcpMessage(tr("mcpConnected", { count: connection.tools.length }));
+      await connection.close();
+    } catch (error) {
+      setMcpMessage(error instanceof Error ? error.message : tr("mcpConnectFailed"));
+    } finally {
+      setMcpBusy(false);
+    }
+  }
+
+  async function removeMcpServer(id: string): Promise<void> {
+    try {
+      await forgetMcpAuthorization(id);
+      setDraft((current) => ({ ...current, mcpServers: current.mcpServers.filter((item) => item.id !== id) }));
+      setMcpMessage("");
+    } catch (error) {
+      setMcpMessage(error instanceof Error ? error.message : tr("mcpConnectFailed"));
+    }
   }
 
   async function importSkills(files: FileList | null) {
@@ -236,14 +270,26 @@ function SettingsView({ settings, availableModels, onClose, onSave, skills, onSk
         <div className="mp-field">
           <span className="mp-field__label">{tr("mcpServers")}</span>
           <p className="mp-field__hint">{tr("mcpHint")}</p>
-          {draft.mcpServers.map((server) => <div className="integration-row" key={server.id}>
+          {draft.mcpServers.map((server) => <div className="integration-row integration-row--mcp" key={server.id}>
             <span><strong>{server.id}</strong><small>{server.url}</small></span>
-            <button className="mp-button mp-button--ghost" type="button" onClick={() => void connectMcpServer(server, AbortSignal.timeout(10_000)).then(async (connection) => { setMcpMessage(tr("mcpConnected", { count: connection.tools.length })); await connection.close(); }).catch((error) => setMcpMessage(error instanceof Error ? error.message : tr("mcpConnectFailed")))}>{tr("checkConnection")}</button>
-            <button className="mp-button mp-button--ghost" type="button" onClick={() => setDraft((current) => ({ ...current, mcpServers: current.mcpServers.filter((item) => item.id !== server.id) }))}>{tr("remove")}</button>
+            {server.auth && <button className="mp-button mp-button--ghost" type="button" disabled={mcpBusy} onClick={() => void checkMcpServer(server, true)}>{tr("mcpSignIn")}</button>}
+            {server.auth && <button className="mp-button mp-button--ghost" type="button" disabled={mcpBusy} onClick={() => void forgetMcpAuthorization(server.id).then(() => setMcpMessage(tr("mcpSignedOut"))).catch((error) => setMcpMessage(error instanceof Error ? error.message : tr("mcpConnectFailed")))}>{tr("mcpSignOut")}</button>}
+            <button className="mp-button mp-button--ghost" type="button" disabled={mcpBusy} onClick={() => void checkMcpServer(server, false)}>{tr("checkConnection")}</button>
+            <button className="mp-button mp-button--ghost" type="button" disabled={mcpBusy} onClick={() => void removeMcpServer(server.id)}>{tr("remove")}</button>
           </div>)}
           <input className="mp-input" type="text" value={mcpId} onChange={(event) => setMcpId(event.target.value)} placeholder={tr("mcpName")} aria-label={tr("mcpName")} />
           <input className="mp-input" type="url" value={mcpUrl} onChange={(event) => setMcpUrl(event.target.value)} placeholder="https://example.com/mcp" aria-label={tr("mcpUrl")} />
+          <select className="mp-select" value={mcpAuthMode} onChange={(event) => setMcpAuthMode(event.target.value === "oauth" ? "oauth" : "headers")} aria-label={tr("mcpAuthMode")}>
+            <option value="headers">{tr("mcpHeaderAuth")}</option>
+            <option value="oauth">OAuth</option>
+          </select>
           <textarea className="mp-input" value={mcpHeaders} onChange={(event) => setMcpHeaders(event.target.value)} aria-label={tr("mcpHeaders")} rows={2} />
+          {mcpAuthMode === "oauth" && <>
+            <input className="mp-input" type="text" value={mcpClientId} onChange={(event) => setMcpClientId(event.target.value)} placeholder={tr("mcpClientId")} aria-label={tr("mcpClientId")} autoComplete="off" />
+            <input className="mp-input" type="url" value={mcpMetadataUrl} onChange={(event) => setMcpMetadataUrl(event.target.value)} placeholder={tr("mcpClientMetadataUrl")} aria-label={tr("mcpClientMetadataUrl")} />
+            <input className="mp-input" type="text" value={mcpScope} onChange={(event) => setMcpScope(event.target.value)} placeholder={tr("mcpScopes")} aria-label={tr("mcpScopes")} />
+            <p className="mp-field__hint">{tr("mcpOAuthHint")}</p>
+          </>}
           <button className="mp-button mp-button--secondary" type="button" onClick={addMcpServer}>{tr("addMcpServer")}</button>
           {mcpMessage && <p className="mp-field__hint" role="status">{mcpMessage}</p>}
         </div>

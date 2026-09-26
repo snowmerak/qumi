@@ -1,10 +1,12 @@
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { Client, StreamableHTTPClientTransport, UnauthorizedError } from "@modelcontextprotocol/client";
 import type { AgentTool } from "./agent.ts";
+import { BrowserMcpOAuthProvider, McpAuthorizationRequiredError, type McpOAuthSettings } from "./mcp-oauth.ts";
 
 export interface McpServerSettings {
   id: string;
   url: string;
   headers: Record<string, string>;
+  auth?: McpOAuthSettings;
 }
 
 const idPattern = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$/;
@@ -22,7 +24,30 @@ export function validateMcpServer(value: McpServerSettings): McpServerSettings {
     if (typeof content !== "string" || /[\r\n]/.test(content)) throw new Error(`MCP 헤더 값이 올바르지 않습니다: ${name}`);
     headers[name] = content;
   }
-  return { id: value.id, url: url.toString(), headers };
+  let auth: McpOAuthSettings | undefined;
+  if (value.auth !== undefined) {
+    if (!value.auth || value.auth.type !== "oauth") throw new Error("MCP 인증 방식이 올바르지 않습니다.");
+    if (url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
+      throw new Error("MCP OAuth 서버에는 HTTPS 주소가 필요합니다.");
+    }
+    if (Object.keys(headers).some((name) => name.toLowerCase() === "authorization")) {
+      throw new Error("MCP OAuth와 Authorization 요청 헤더를 함께 사용할 수 없습니다.");
+    }
+    const clientId = value.auth.clientId?.trim();
+    const clientMetadataUrl = value.auth.clientMetadataUrl?.trim();
+    const scope = value.auth.scope?.trim();
+    if (clientId && clientMetadataUrl) throw new Error("OAuth 클라이언트 ID와 메타데이터 URL 중 하나만 입력해 주세요.");
+    if (clientMetadataUrl) {
+      let metadata: URL;
+      try { metadata = new URL(clientMetadataUrl); }
+      catch { throw new Error("OAuth 클라이언트 메타데이터 URL이 올바르지 않습니다."); }
+      if (metadata.protocol !== "https:" || metadata.username || metadata.password || metadata.hash || metadata.pathname === "/") {
+        throw new Error("OAuth 클라이언트 메타데이터는 공개 HTTPS 문서 URL이어야 합니다.");
+      }
+    }
+    auth = { type: "oauth", ...(clientId ? { clientId } : {}), ...(clientMetadataUrl ? { clientMetadataUrl } : {}), ...(scope ? { scope } : {}) };
+  }
+  return { id: value.id, url: url.toString(), headers, ...(auth ? { auth } : {}) };
 }
 
 function toolName(server: string, name: string): string {
@@ -44,16 +69,34 @@ export interface McpConnection {
   close: () => Promise<void>;
 }
 
-export async function connectMcpServer(settings: McpServerSettings, signal: AbortSignal): Promise<McpConnection> {
+export async function connectMcpServer(settings: McpServerSettings, signal: AbortSignal, interactive = false): Promise<McpConnection> {
   const server = validateMcpServer(settings);
-  const client = new Client({ name: "qumi", version: "0.1.0" }, { versionNegotiation: { mode: "auto" } });
-  const transport = new StreamableHTTPClientTransport(new URL(server.url), { requestInit: { headers: server.headers } });
+  const provider = server.auth ? await BrowserMcpOAuthProvider.create(server.id, server.url, server.auth) : undefined;
+  if (provider && !interactive && !await provider.hasTokens()) throw new McpAuthorizationRequiredError();
+  if (provider && interactive && provider.hasPendingAuthorization()) await provider.authorize();
+  const makeConnection = () => {
+    const client = new Client({ name: "qumi", version: "0.1.0" }, { versionNegotiation: { mode: "auto" } });
+    const transport = new StreamableHTTPClientTransport(new URL(server.url), {
+      requestInit: { headers: server.headers }, ...(provider ? { authProvider: provider } : {}),
+    });
+    return { client, transport };
+  };
+  let { client, transport } = makeConnection();
   const close = async () => {
     await transport.terminateSession().catch(() => {});
     await client.close();
   };
   try {
-    await client.connect(transport, { signal, timeout: 10_000 });
+    try {
+      await client.connect(transport, { signal, timeout: 10_000 });
+    } catch (error) {
+      if (!provider || !(error instanceof UnauthorizedError)) throw error;
+      if (!interactive) throw new McpAuthorizationRequiredError();
+      try { await provider.authorize(); }
+      finally { await client.close().catch(() => {}); }
+      ({ client, transport } = makeConnection());
+      await client.connect(transport, { signal, timeout: 10_000 });
+    }
     const discovered = await client.listTools(undefined, { signal, timeout: 10_000 });
     const names = new Set<string>();
     const tools: AgentTool[] = discovered.tools.map((item) => {
@@ -65,7 +108,12 @@ export async function connectMcpServer(settings: McpServerSettings, signal: Abor
         definition: { type: "function", function: { name: exposedName, description: `[MCP ${server.id}] ${item.description || item.name}`, parameters: schema } },
         execute: async (value, callSignal) => {
           callSignal.throwIfAborted();
-          const result = await client.callTool({ name: item.name, arguments: toolArguments(value) }, { signal: callSignal, timeout: 60_000 });
+          let result;
+          try { result = await client.callTool({ name: item.name, arguments: toolArguments(value) }, { signal: callSignal, timeout: 60_000 }); }
+          catch (error) {
+            if (provider && error instanceof UnauthorizedError) throw new McpAuthorizationRequiredError();
+            throw error;
+          }
           callSignal.throwIfAborted();
           return JSON.stringify(result);
         },
