@@ -79,8 +79,9 @@ export interface McpConnection {
 export async function connectMcpServer(settings: McpServerSettings, signal: AbortSignal, interactive = false): Promise<McpConnection> {
   const server = validateMcpServer(settings);
   const provider = server.auth ? await BrowserMcpOAuthProvider.create(server.id, server.url, server.auth) : undefined;
-  if (provider && !interactive && !await provider.hasTokens()) throw new McpAuthorizationRequiredError();
-  if (provider && interactive && provider.hasPendingAuthorization()) await provider.authorize();
+  // A public tools/list response does not prove the user signed in.
+  if (provider && interactive) await provider.signIn();
+  else if (provider && !await provider.hasTokens()) throw new McpAuthorizationRequiredError();
   const makeConnection = () => {
     const client = new Client({ name: "qumi", version: "0.1.0" }, { versionNegotiation: { mode: "auto" } });
     const transport = new StreamableHTTPClientTransport(new URL(server.url), {

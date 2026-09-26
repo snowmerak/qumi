@@ -107,6 +107,25 @@ export class BrowserMcpOAuthProvider implements OAuthClientProvider {
   async hasTokens(): Promise<boolean> { return !!this.record.tokens?.access_token; }
   hasPendingAuthorization(): boolean { return !!this.record.authorizationUrl && !!this.record.state; }
 
+  async signIn(): Promise<void> {
+    if (this.hasPendingAuthorization()) {
+      await this.authorize();
+      return;
+    }
+    if (await this.hasTokens()) return;
+    let result: Awaited<ReturnType<typeof auth>>;
+    try {
+      result = await auth(this, { serverUrl: this.record.serverUrl });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("does not support dynamic client registration")) {
+        throw new Error("MCP 인증 서버가 자동 클라이언트 등록을 지원하지 않습니다. 등록된 OAuth 클라이언트 ID를 입력해 주세요.", { cause: error });
+      }
+      throw error;
+    }
+    if (result === "REDIRECT") await this.authorize();
+    else if (result !== "AUTHORIZED") throw new McpAuthorizationRequiredError();
+  }
+
   async state(): Promise<string> {
     this.record.state = crypto.randomUUID();
     await this.persist();

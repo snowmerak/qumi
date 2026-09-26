@@ -95,7 +95,7 @@ describe("Streamable HTTP MCP", () => {
     );
   });
 
-  it("completes public-client OAuth with PKCE, issuer and resource binding", async () => {
+  it("completes OAuth before reporting success when eight tools are publicly listed", async () => {
     const oldChrome = globalThis.chrome;
     const stored = new Map<string, unknown>();
     const durable = new Map<string, unknown>();
@@ -180,13 +180,14 @@ describe("Streamable HTTP MCP", () => {
           return;
         }
         if (path === "/mcp") {
-          if (!request.headers.authorization?.startsWith("Bearer ")) {
-            response.writeHead(401, { "WWW-Authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"` }).end();
-            return;
-          }
           let body = "";
           for await (const chunk of request) body += chunk;
           const message = JSON.parse(body) as { id: number; method: string };
+          // Some hosted servers advertise tools before asking for OAuth.
+          if (!request.headers.authorization?.startsWith("Bearer ") && !["server/discover", "tools/list"].includes(message.method)) {
+            response.writeHead(401, { "WWW-Authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"` }).end();
+            return;
+          }
           if (message.method === "tools/call" && request.headers.authorization !== "Bearer elevated-token") {
             response.writeHead(403, { "WWW-Authenticate": `Bearer error="insufficient_scope", scope="read write", resource_metadata="${origin}/.well-known/oauth-protected-resource"` }).end();
             return;
@@ -194,7 +195,7 @@ describe("Streamable HTTP MCP", () => {
           const result = message.method === "server/discover"
             ? { resultType: "complete", supportedVersions: ["2026-07-28"], capabilities: { tools: {} }, _meta: { "io.modelcontextprotocol/serverInfo": { name: "test", version: "1.0" } } }
             : message.method === "tools/list"
-              ? { resultType: "complete", ttlMs: 0, cacheScope: "private", tools: [{ name: "echo", inputSchema: { type: "object", properties: {} } }] }
+              ? { resultType: "complete", ttlMs: 0, cacheScope: "private", tools: ["echo", ...Array.from({ length: 7 }, (_, index) => `extra_${index}`)].map((name) => ({ name, inputSchema: { type: "object", properties: {} } })) }
               : { resultType: "complete", content: [{ type: "text", text: "done" }] };
           response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
           return;
@@ -208,7 +209,7 @@ describe("Streamable HTTP MCP", () => {
       const settings = { id: "oauth", url: `${origin}/mcp`, headers: {}, auth: { type: "oauth" as const, clientId: "test-client" } };
       await assert.rejects(connectMcpServer(settings, new AbortController().signal), /로그인/);
       const connection = await connectMcpServer(settings, new AbortController().signal, true);
-      assert.equal(connection.tools.length, 1);
+      assert.equal(connection.tools.length, 8);
       await connection.close();
       assert.equal(authorized, true);
       assert.equal(tokenExchanges, 1);
@@ -219,6 +220,7 @@ describe("Streamable HTTP MCP", () => {
       assert.equal(saved.state, undefined);
       stored.clear(); // Simulate a browser restart clearing chrome.storage.session.
       const another = await connectMcpServer(settings, new AbortController().signal);
+      assert.equal(another.tools.length, 8);
       await assert.rejects(another.tools[0].execute({}, new AbortController().signal), /로그인/);
       await another.close();
       assert.equal(tokenExchanges, 1);

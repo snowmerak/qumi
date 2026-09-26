@@ -21,6 +21,7 @@ test("messages interpolate and browser approval text follows the chosen language
   assert.equal(localizeApprovalDetail("en", "https://example.com\n새 값: null (속성 제거)"), "https://example.com\nNew value: null (remove attribute)");
   assert.equal(localizeKnownError("en", "Gateway 요청에 실패했습니다. (502)"), "Gateway request failed (502).");
   assert.match(localizeKnownError("en", translate("ko", "mcpOriginRejected")), /rejected this Chrome extension's Origin/);
+  assert.match(localizeKnownError("en", translate("ko", "mcpClientRegistrationUnsupported")), /registered OAuth client ID/);
   assert.equal(renderTaskCompletion({ outcome: "blocked", summary: "Done", findings: ["A"], artifacts: [], verification: [], blocker: "B" }, "ja"), "Done\n\n確認事項:\n- A\n\n阻害要因: B");
 });
 
