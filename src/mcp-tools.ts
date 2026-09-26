@@ -1,4 +1,4 @@
-import { Client, StreamableHTTPClientTransport, UnauthorizedError } from "@modelcontextprotocol/client";
+import { Client, SdkHttpError, StreamableHTTPClientTransport, UnauthorizedError } from "@modelcontextprotocol/client";
 import type { AgentTool } from "./agent.ts";
 import { BrowserMcpOAuthProvider, McpAuthorizationRequiredError, type McpOAuthSettings } from "./mcp-oauth.ts";
 
@@ -64,6 +64,13 @@ function toolArguments(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function explainMcpError(error: unknown): unknown {
+  const detail = error instanceof SdkHttpError && typeof error.data?.text === "string"
+    ? error.data.text : error instanceof Error ? error.message : "";
+  if (!/Invalid Origin(?:\b|:)/i.test(detail)) return error;
+  return new Error("MCP 서버가 Chrome 확장의 Origin을 거부했습니다. 이 서버에 직접 연결하려면 서버가 확장 출처를 허용해야 합니다. 그렇지 않으면 로컬 MCP 브리지가 필요합니다.", { cause: error });
+}
+
 export interface McpConnection {
   tools: AgentTool[];
   close: () => Promise<void>;
@@ -112,7 +119,7 @@ export async function connectMcpServer(settings: McpServerSettings, signal: Abor
           try { result = await client.callTool({ name: item.name, arguments: toolArguments(value) }, { signal: callSignal, timeout: 60_000 }); }
           catch (error) {
             if (provider && error instanceof UnauthorizedError) throw new McpAuthorizationRequiredError();
-            throw error;
+            throw explainMcpError(error);
           }
           callSignal.throwIfAborted();
           return JSON.stringify(result);
@@ -122,7 +129,7 @@ export async function connectMcpServer(settings: McpServerSettings, signal: Abor
     return { tools, close };
   } catch (error) {
     await close().catch(() => {});
-    throw error;
+    throw explainMcpError(error);
   }
 }
 

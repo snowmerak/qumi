@@ -19,6 +19,7 @@ export interface SavedState {
 }
 
 const storageKey = "qumiState";
+const mcpServersKey = "qumiMcpServers";
 
 export const emptyState: SavedState = {
   settings: { baseUrl: "", apiKey: "", model: "", apiMode: "chat_completions", contextWindowOverride: 0, approvalPolicy: "changes", language: "auto", mcpServers: [] },
@@ -48,13 +49,29 @@ function modelMessages(value: unknown): ModelMessage[] {
     : [];
 }
 
-export async function loadState(): Promise<SavedState> {
-  const value =
-    typeof chrome !== "undefined" && chrome.storage?.local
-      ? (await chrome.storage.local.get(storageKey))[storageKey]
-      : JSON.parse(localStorage.getItem(storageKey) || "null");
+function storedMcpServers(value: unknown): McpServerSettings[] {
+  return Array.isArray(value) ? value.flatMap((entry) => {
+    try { return [validateMcpServer(entry)]; } catch { return []; }
+  }) : [];
+}
 
-  if (!value || typeof value !== "object") return emptyState;
+export async function saveMcpServers(servers: McpServerSettings[]): Promise<void> {
+  const validated = servers.map(validateMcpServer);
+  if (typeof chrome !== "undefined" && chrome.storage?.local) {
+    await chrome.storage.local.set({ [mcpServersKey]: validated });
+  } else {
+    localStorage.setItem(mcpServersKey, JSON.stringify(validated));
+  }
+}
+
+export async function loadState(): Promise<SavedState> {
+  const stored = typeof chrome !== "undefined" && chrome.storage?.local
+    ? await chrome.storage.local.get([storageKey, mcpServersKey])
+    : { [storageKey]: JSON.parse(localStorage.getItem(storageKey) || "null"), [mcpServersKey]: JSON.parse(localStorage.getItem(mcpServersKey) || "null") };
+  const value = stored[storageKey];
+  const independentServers = stored[mcpServersKey];
+
+  if (!value || typeof value !== "object") return { ...emptyState, settings: { ...emptyState.settings, mcpServers: storedMcpServers(independentServers) } };
   const saved = value as Partial<SavedState> & { conversationId?: unknown };
   const messages = storedMessages(saved.messages);
   const oldContext = messages.map(({ role, content }): ModelMessage => ({ role, content }));
@@ -69,9 +86,7 @@ export async function loadState(): Promise<SavedState> {
         ? saved.settings.contextWindowOverride : 0,
       approvalPolicy: approvalPolicyFrom(saved.settings?.approvalPolicy),
       language: languagePreferenceFrom(saved.settings?.language),
-      mcpServers: Array.isArray(saved.settings?.mcpServers) ? saved.settings.mcpServers.flatMap((entry) => {
-        try { return [validateMcpServer(entry)]; } catch { return []; }
-      }) : [],
+      mcpServers: storedMcpServers(Array.isArray(independentServers) ? independentServers : saved.settings?.mcpServers),
     },
     messages,
     skills: Array.isArray(saved.skills) ? saved.skills.flatMap((entry) => {

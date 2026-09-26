@@ -9,7 +9,7 @@ import { emptyAgentState, runTurn, type AgentState } from "./agent";
 import { approvalPolicyFrom, requiresBrowserApproval } from "./browser-approval";
 import { browserTurnTools } from "./browser-turn-tools";
 import { clearExecutionLog, createExecutionLog, readExecutionLog } from "./execution-log";
-import { emptyState, loadState, saveState, type AppSettings } from "./storage";
+import { emptyState, loadState, saveMcpServers, saveState, type AppSettings } from "./storage";
 import { canReadPages, capturePageTarget, getActiveBrowserTab, getActivePageCandidate, hasPageAccess, requestPageAccess, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
 import { promptWithSelections, type PageSelection } from "./page-selection";
 import { cancelPageRegion, capturePageRegion } from "./page-region";
@@ -70,9 +70,10 @@ interface SettingsViewProps {
   onExportLog: () => Promise<number>;
   onClearLog: () => Promise<void>;
   onLanguageChange: (language: LanguagePreference) => void;
+  onMcpServersChange: (servers: AppSettings["mcpServers"]) => Promise<void>;
 }
 
-function SettingsView({ settings, availableModels, onClose, onSave, skills, onSkillsChange, onExportLog, onClearLog, onLanguageChange }: SettingsViewProps) {
+function SettingsView({ settings, availableModels, onClose, onSave, skills, onSkillsChange, onExportLog, onClearLog, onLanguageChange, onMcpServersChange }: SettingsViewProps) {
   const [draft, setDraft] = useState(settings);
   const [checkedModels, setCheckedModels] = useState<GatewayModel[] | null>(null);
   const [testing, setTesting] = useState(false);
@@ -103,7 +104,7 @@ function SettingsView({ settings, availableModels, onClose, onSave, skills, onSk
 
   const selectedModel = models.find((model) => model.id === draft.model);
 
-  function addMcpServer() {
+  async function addMcpServer() {
     try {
       const parsed: unknown = JSON.parse(mcpHeaders);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.values(parsed).some((value) => typeof value !== "string")) throw new Error(tr("mcpHeadersInvalid"));
@@ -112,10 +113,14 @@ function SettingsView({ settings, availableModels, onClose, onSave, skills, onSk
         ...(mcpAuthMode === "oauth" ? { auth: { type: "oauth" as const, clientId: mcpClientId, clientMetadataUrl: mcpMetadataUrl, scope: mcpScope } } : {}),
       });
       if (draft.mcpServers.some((current) => current.id === server.id)) throw new Error(tr("mcpIdExists"));
-      setDraft((current) => ({ ...current, mcpServers: [...current.mcpServers, server] }));
+      setMcpBusy(true);
+      const servers = [...draft.mcpServers, server];
+      await onMcpServersChange(servers);
+      setDraft((current) => ({ ...current, mcpServers: servers }));
       setMcpId(""); setMcpUrl(""); setMcpHeaders("{}"); setMcpAuthMode("headers");
       setMcpClientId(""); setMcpMetadataUrl(""); setMcpScope(""); setMcpMessage("");
     } catch (error) { setMcpMessage(error instanceof Error ? localizeKnownError(locale, error.message) : tr("mcpAddFailed")); }
+    finally { setMcpBusy(false); }
   }
 
   async function checkMcpServer(server: AppSettings["mcpServers"][number], interactive: boolean): Promise<void> {
@@ -126,20 +131,23 @@ function SettingsView({ settings, availableModels, onClose, onSave, skills, onSk
       setMcpMessage(tr("mcpConnected", { count: connection.tools.length }));
       await connection.close();
     } catch (error) {
-      setMcpMessage(error instanceof Error ? error.message : tr("mcpConnectFailed"));
+      setMcpMessage(error instanceof Error ? localizeKnownError(locale, error.message) : tr("mcpConnectFailed"));
     } finally {
       setMcpBusy(false);
     }
   }
 
   async function removeMcpServer(id: string): Promise<void> {
+    setMcpBusy(true);
     try {
       await forgetMcpAuthorization(id);
-      setDraft((current) => ({ ...current, mcpServers: current.mcpServers.filter((item) => item.id !== id) }));
+      const servers = draft.mcpServers.filter((item) => item.id !== id);
+      await onMcpServersChange(servers);
+      setDraft((current) => ({ ...current, mcpServers: servers }));
       setMcpMessage("");
     } catch (error) {
       setMcpMessage(error instanceof Error ? error.message : tr("mcpConnectFailed"));
-    }
+    } finally { setMcpBusy(false); }
   }
 
   async function importSkills(files: FileList | null) {
@@ -290,7 +298,7 @@ function SettingsView({ settings, availableModels, onClose, onSave, skills, onSk
             <input className="mp-input" type="text" value={mcpScope} onChange={(event) => setMcpScope(event.target.value)} placeholder={tr("mcpScopes")} aria-label={tr("mcpScopes")} />
             <p className="mp-field__hint">{tr("mcpOAuthHint")}</p>
           </>}
-          <button className="mp-button mp-button--secondary" type="button" onClick={addMcpServer}>{tr("addMcpServer")}</button>
+          <button className="mp-button mp-button--secondary" type="button" onClick={() => void addMcpServer()} disabled={mcpBusy}>{tr("addMcpServer")}</button>
           {mcpMessage && <p className="mp-field__hint" role="status">{mcpMessage}</p>}
         </div>
         <div className="mp-field">
@@ -312,7 +320,7 @@ function SettingsView({ settings, availableModels, onClose, onSave, skills, onSk
         </div>
         <button className="mp-button mp-button--secondary" type="button" onClick={() => void checkConnection()} disabled={testing}>{tr(testing ? "checkingEllipsis" : "checkConnection")}</button>
         {message && <div className={`inline-notice ${isError ? "inline-notice--error" : "inline-notice--success"}`} role={isError ? "alert" : "status"}>{message}</div>}
-        <button className="mp-button mp-button--primary save-button" type="submit" disabled={testing}>{tr(testing ? "checkingEllipsis" : "save")}</button>
+        <button className="mp-button mp-button--primary save-button" type="submit" disabled={testing || mcpBusy}>{tr(testing ? "checkingEllipsis" : "save")}</button>
       </form>
     </div>
   );
@@ -538,6 +546,11 @@ export function App() {
     setView("chat");
   }
 
+  async function persistMcpServers(servers: AppSettings["mcpServers"]): Promise<void> {
+    await saveMcpServers(servers);
+    setSettings((current) => ({ ...current, mcpServers: servers }));
+  }
+
   function changeModel(model: string) {
     setSettings({ ...settings, model, apiMode: model.startsWith("codex/") ? "chat_completions" : settings.apiMode, contextWindowOverride: 0 });
     setMessages([]);
@@ -579,7 +592,10 @@ export function App() {
     try {
       mcpConnection = await connectMcpServers(settings.mcpServers, controller.signal);
       controller.signal.throwIfAborted();
-      if (mcpConnection.errors.length) setError(`${tr("mcpConnectFailed")}: ${mcpConnection.errors.join("; ")}`);
+      if (mcpConnection.errors.length) setError(`${tr("mcpConnectFailed")}: ${mcpConnection.errors.map((entry) => {
+        const separator = entry.indexOf(": ");
+        return separator < 0 ? entry : `${entry.slice(0, separator)}: ${localizeKnownError(locale, entry.slice(separator + 2))}`;
+      }).join("; ")}`);
       const browserTab = await getActiveBrowserTab();
       const connectedPage = pageTarget && browserTab?.tabId === pageTarget.tabId && browserTab.url === pageTarget.url ? pageTarget : null;
       const result = await runTurn({
@@ -647,7 +663,7 @@ export function App() {
       </header>
 
       {view === "settings" ? (
-        <SettingsView settings={settings} availableModels={models} skills={skills} onSkillsChange={setSkills} onClose={() => setView("chat")} onSave={saveSettings} onExportLog={exportLog} onClearLog={clearExecutionLog} onLanguageChange={(language) => { setSettings((current) => ({ ...current, language })); setError(""); setPageError(""); }} />
+        <SettingsView settings={settings} availableModels={models} skills={skills} onSkillsChange={setSkills} onClose={() => setView("chat")} onSave={saveSettings} onExportLog={exportLog} onClearLog={clearExecutionLog} onMcpServersChange={persistMcpServers} onLanguageChange={(language) => { setSettings((current) => ({ ...current, language })); setError(""); setPageError(""); }} />
       ) : (
         <>
           <div className="model-bar">

@@ -26,23 +26,34 @@ const memoryRecords = new Map<string, OAuthRecord>();
 const keyFor = (id: string) => `qumiMcpOAuth:${id}`;
 
 async function readRecord(id: string): Promise<OAuthRecord | undefined> {
-  if (typeof chrome !== "undefined" && chrome.storage?.session) {
-    return (await chrome.storage.session.get(keyFor(id)))[keyFor(id)] as OAuthRecord | undefined;
+  if (typeof chrome !== "undefined" && chrome.storage?.local && chrome.storage?.session) {
+    const key = keyFor(id);
+    const [local, session] = await Promise.all([chrome.storage.local.get(key), chrome.storage.session.get(key)]);
+    const durable = local[key] as OAuthRecord | undefined;
+    const transient = session[key] as OAuthRecord | undefined;
+    if (!durable) return transient; // Migrate records written by earlier session-only builds.
+    if (transient?.serverUrl === durable.serverUrl && transient.configuration === durable.configuration) {
+      return { ...durable, codeVerifier: transient.codeVerifier, state: transient.state, authorizationUrl: transient.authorizationUrl };
+    }
+    return durable;
   }
   return memoryRecords.get(id);
 }
 
 async function writeRecord(id: string, record: OAuthRecord): Promise<void> {
-  if (typeof chrome !== "undefined" && chrome.storage?.session) {
-    await chrome.storage.session.set({ [keyFor(id)]: record });
+  if (typeof chrome !== "undefined" && chrome.storage?.local && chrome.storage?.session) {
+    const key = keyFor(id);
+    const { serverUrl, configuration, client, staticIssuer, tokens, discovery, codeVerifier, state, authorizationUrl } = record;
+    await chrome.storage.local.set({ [key]: { serverUrl, configuration, client, staticIssuer, tokens, discovery } });
+    await chrome.storage.session.set({ [key]: { serverUrl, configuration, codeVerifier, state, authorizationUrl } });
   } else {
     memoryRecords.set(id, record);
   }
 }
 
 export async function forgetMcpAuthorization(id: string): Promise<void> {
-  if (typeof chrome !== "undefined" && chrome.storage?.session) {
-    await chrome.storage.session.remove(keyFor(id));
+  if (typeof chrome !== "undefined" && chrome.storage?.local && chrome.storage?.session) {
+    await Promise.all([chrome.storage.local.remove(keyFor(id)), chrome.storage.session.remove(keyFor(id))]);
   } else {
     memoryRecords.delete(id);
   }
@@ -69,11 +80,14 @@ export class BrowserMcpOAuthProvider implements OAuthClientProvider {
     if (typeof chrome === "undefined" || !chrome.identity?.getRedirectURL || !chrome.identity?.launchWebAuthFlow) {
       throw new Error("MCP OAuth 로그인은 Chrome 확장에서 사용할 수 있습니다.");
     }
+    await chrome.storage?.local?.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" });
     const configuration = JSON.stringify(settings);
     const saved = await readRecord(id);
     const record = saved?.serverUrl === url && saved.configuration === configuration
       ? saved : { serverUrl: url, configuration };
-    return new BrowserMcpOAuthProvider(id, settings, record);
+    const provider = new BrowserMcpOAuthProvider(id, settings, record);
+    if (saved) await provider.persist();
+    return provider;
   }
 
   get redirectUrl(): string { return chrome.identity.getRedirectURL("mcp"); }

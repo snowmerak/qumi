@@ -80,9 +80,25 @@ describe("Streamable HTTP MCP", () => {
     assert.throws(() => validateMcpServer({ id: "local", url: "http://example.com/mcp", headers: {}, auth: { type: "oauth" } }), /HTTPS/);
   });
 
+  it("explains a server's rejected extension Origin without exposing its ID", async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(403, { "Content-Type": "application/json" }).end(JSON.stringify({
+        jsonrpc: "2.0", error: { code: -32000, message: "Invalid Origin: test-extension-id" }, id: null,
+      }));
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    await assert.rejects(
+      connectMcpServer({ id: "origin", url: `http://127.0.0.1:${address.port}/mcp`, headers: {} }, new AbortController().signal),
+      (error: unknown) => error instanceof Error && error.message.includes("확장의 Origin을 거부") && !error.message.includes("test-extension-id"),
+    );
+  });
+
   it("completes public-client OAuth with PKCE, issuer and resource binding", async () => {
     const oldChrome = globalThis.chrome;
     const stored = new Map<string, unknown>();
+    const durable = new Map<string, unknown>();
     const seen: string[] = [];
     let origin = "";
     let authorized = false;
@@ -106,11 +122,19 @@ describe("Streamable HTTP MCP", () => {
           return `https://test-extension.chromiumapp.org/mcp?code=test-code&state=${encodeURIComponent(state)}&iss=${encodeURIComponent(origin)}`;
         },
       },
-      storage: { session: {
-        get: async (key: string) => ({ [key]: stored.get(key) }),
-        set: async (items: Record<string, unknown>) => { for (const [key, value] of Object.entries(items)) stored.set(key, value); },
-        remove: async (key: string) => { stored.delete(key); },
-      } },
+      storage: {
+        session: {
+          get: async (key: string) => ({ [key]: stored.get(key) }),
+          set: async (items: Record<string, unknown>) => { for (const [key, value] of Object.entries(items)) stored.set(key, value); },
+          remove: async (key: string) => { stored.delete(key); },
+        },
+        local: {
+          setAccessLevel: async (options: { accessLevel: string }) => { assert.equal(options.accessLevel, "TRUSTED_CONTEXTS"); },
+          get: async (key: string) => ({ [key]: durable.get(key) }),
+          set: async (items: Record<string, unknown>) => { for (const [key, value] of Object.entries(items)) durable.set(key, value); },
+          remove: async (key: string) => { durable.delete(key); },
+        },
+      },
     } as unknown as typeof chrome;
     try {
       server = createServer(async (request, response) => {
@@ -150,6 +174,7 @@ describe("Streamable HTTP MCP", () => {
           tokenExchanges++;
           response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
             access_token: tokenExchanges === 1 ? "test-token" : "elevated-token",
+            refresh_token: tokenExchanges === 1 ? "refresh-one" : "refresh-two",
             token_type: "Bearer", expires_in: 3600, scope: tokenExchanges === 1 ? "read" : "read write",
           }));
           return;
@@ -188,6 +213,11 @@ describe("Streamable HTTP MCP", () => {
       assert.equal(authorized, true);
       assert.equal(tokenExchanges, 1);
       assert.ok(seen.some((path) => path.includes("oauth-protected-resource")));
+      const saved = durable.get("qumiMcpOAuth:oauth") as { tokens?: { access_token: string; refresh_token: string }; state?: string };
+      assert.equal(saved.tokens?.access_token, "test-token");
+      assert.equal(saved.tokens?.refresh_token, "refresh-one");
+      assert.equal(saved.state, undefined);
+      stored.clear(); // Simulate a browser restart clearing chrome.storage.session.
       const another = await connectMcpServer(settings, new AbortController().signal);
       await assert.rejects(another.tools[0].execute({}, new AbortController().signal), /로그인/);
       await another.close();
@@ -203,6 +233,7 @@ describe("Streamable HTTP MCP", () => {
       assert.equal(authorizationPrompts, 3);
       await forgetMcpAuthorization("oauth");
       await forgetMcpAuthorization("dynamic");
+      assert.equal(durable.size, 0);
       await assert.rejects(connectMcpServer(settings, new AbortController().signal), /로그인/);
     } finally {
       globalThis.chrome = oldChrome;
@@ -212,16 +243,24 @@ describe("Streamable HTTP MCP", () => {
   it("rejects an OAuth callback with the wrong state before token exchange", async () => {
     const oldChrome = globalThis.chrome;
     const stored = new Map<string, unknown>();
+    const durable = new Map<string, unknown>();
     globalThis.chrome = {
       identity: {
         getRedirectURL: () => "https://test-extension.chromiumapp.org/mcp",
         launchWebAuthFlow: async () => "https://test-extension.chromiumapp.org/mcp?code=stolen&state=wrong",
       },
-      storage: { session: {
-        get: async (key: string) => ({ [key]: stored.get(key) }),
-        set: async (items: Record<string, unknown>) => { for (const [key, value] of Object.entries(items)) stored.set(key, value); },
-        remove: async (key: string) => { stored.delete(key); },
-      } },
+      storage: {
+        session: {
+          get: async (key: string) => ({ [key]: stored.get(key) }),
+          set: async (items: Record<string, unknown>) => { for (const [key, value] of Object.entries(items)) stored.set(key, value); },
+          remove: async (key: string) => { stored.delete(key); },
+        },
+        local: {
+          get: async (key: string) => ({ [key]: durable.get(key) }),
+          set: async (items: Record<string, unknown>) => { for (const [key, value] of Object.entries(items)) durable.set(key, value); },
+          remove: async (key: string) => { durable.delete(key); },
+        },
+      },
     } as unknown as typeof chrome;
     try {
       const provider = await BrowserMcpOAuthProvider.create("state-test", "https://example.com/mcp", { type: "oauth" });
