@@ -22,6 +22,7 @@ export interface ToolCall {
 export interface ModelMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+  imageDataUrl?: string;
   name?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
@@ -262,7 +263,12 @@ function responseInput(messages: ModelMessage[]): Record<string, unknown>[] {
       input.push(...message.responseOutput);
       continue;
     }
-    if (message.content) input.push({ role: message.role, content: message.content });
+    if (message.imageDataUrl && message.role === "user") {
+      input.push({ role: "user", content: [
+        { type: "input_text", text: message.content },
+        { type: "input_image", image_url: message.imageDataUrl },
+      ] });
+    } else if (message.content) input.push({ role: message.role, content: message.content });
     for (const call of message.tool_calls ?? []) {
       input.push({ type: "function_call", call_id: call.id, name: call.function.name, arguments: call.function.arguments });
     }
@@ -421,7 +427,12 @@ async function requestModelOnce(
     headers: headers(settings),
     body: JSON.stringify({
       model: settings.model,
-      messages,
+      messages: messages.map(({ imageDataUrl, ...message }) => imageDataUrl && message.role === "user"
+        ? { ...message, content: [
+          { type: "text", text: message.content },
+          { type: "image_url", image_url: { url: imageDataUrl } },
+        ] }
+        : message),
       ...(tools.length ? { tools, tool_choice: toolChoice, ...(toolChoice === "none" ? { parallel_tool_calls: false } : {}) } : {}),
       ...(conversationId ? { conversation_id: conversationId } : {}),
       stream: !!onDelta,

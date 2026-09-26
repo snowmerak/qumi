@@ -27,6 +27,12 @@ function fixture(startUrl: string, permitted = true) {
     [8, { id: 8, windowId: 2, url: "https://other.example/", title: "Other", status: "complete", active: false }],
   ]);
   const injections: string[] = [];
+  const mouseEvents: Array<{ type: string; x: number; y: number }> = [];
+  const pngHeader = Buffer.alloc(24);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(pngHeader);
+  pngHeader.write("IHDR", 12);
+  pngHeader.writeUInt32BE(200, 16);
+  pngHeader.writeUInt32BE(100, 20);
   Object.defineProperty(globalThis, "chrome", { configurable: true, value: {
     tabs: {
       query: async (options: { active?: boolean }) => {
@@ -59,6 +65,15 @@ function fixture(startUrl: string, permitted = true) {
       },
     },
     permissions: { request: async () => false, contains: async () => permitted },
+    debugger: {
+      attach: async () => {}, detach: async () => {},
+      sendCommand: async (_debuggee: unknown, method: string, params: { type?: string; x?: number; y?: number } = {}) => {
+        if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { clientWidth: 100, clientHeight: 50 } };
+        if (method === "Page.captureScreenshot") return { data: pngHeader.toString("base64") };
+        if (method === "Input.dispatchMouseEvent") mouseEvents.push({ type: params.type!, x: params.x!, y: params.y! });
+        return {};
+      },
+    },
     scripting: { executeScript: async ({ func }: { func: Function }) => {
       injections.push(func.name);
       const active = tabs.get(activeId)!;
@@ -78,10 +93,22 @@ function fixture(startUrl: string, permitted = true) {
     onNavigated: () => { navigationNotices++; },
     maxResultBytes: 48_000,
   });
-  return { tools, tabs, injections, setLoadingChecks: (count: number) => { loadingChecks = count; }, setNewTabInternalChecks: (count: number) => { newTabInternalChecks = count; }, notices: () => navigationNotices };
+  return { tools, tabs, injections, mouseEvents, setLoadingChecks: (count: number) => { loadingChecks = count; }, setNewTabInternalChecks: (count: number) => { newTabInternalChecks = count; }, notices: () => navigationNotices };
 }
 
 describe("browser tools within one agent turn", () => {
+  it("passes captured images to the agent and resets coordinates after navigation", async () => {
+    const { tools, mouseEvents } = fixture("https://old.example/");
+    const screenshot = find(tools, "capture_screenshot");
+    await screenshot.execute({}, signal);
+    assert.match(screenshot.takeImage?.()?.imageDataUrl ?? "", /^data:image\/png;base64,/);
+    await find(tools, "mouse_click").execute({ x: 80, y: 40 }, signal);
+    assert.deepEqual(mouseEvents.at(-1), { type: "mouseReleased", x: 40, y: 20 });
+    await assert.rejects(find(tools, "mouse_click").execute({ x: 80, y: 40 }, signal), /capture_screenshot/);
+    await screenshot.execute({}, signal);
+    await find(tools, "navigate_to_url").execute({ url: "https://new.example/", disposition: "current_tab" }, signal);
+    await assert.rejects(find(tools, "mouse_move").execute({ x: 80, y: 40 }, signal), /capture_screenshot/);
+  });
   it("continues reading and listing tabs after navigation without using the old URL", async () => {
     const { tools, notices } = fixture("https://old.example/");
     const moved = JSON.parse(await find(tools, "navigate_to_url").execute({ url: "https://sooplive.com/", disposition: "current_tab" }, signal));

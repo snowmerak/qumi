@@ -217,6 +217,30 @@ describe("Qumi agent loop", () => {
     assert.equal(JSON.stringify(trace).includes("Qumi"), false);
   });
 
+  it("shows a captured image to the model after its tool result and does not persist image bytes", async () => {
+    const requests: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+    globalThis.fetch = async (_, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return requests.length === 1
+        ? response({ role: "assistant", content: "", tool_calls: [{ id: "shot", type: "function", function: { name: "capture_screenshot", arguments: "{}" } }] })
+        : response({ role: "assistant", content: "I see a Q." });
+    };
+    let image: { text: string; imageDataUrl: string } | null = null;
+    const tool: AgentTool = {
+      definition: { type: "function", function: { name: "capture_screenshot", description: "Screenshot", parameters: { type: "object", properties: {} } } },
+      execute: async () => { image = { text: "Screenshot 200 × 100", imageDataUrl: "data:image/png;base64,AA==" }; return "Screenshot 200 × 100"; },
+      takeImage: () => { const captured = image; image = null; return captured; },
+    };
+    const result = await runTurn({ settings, contextWindow: 16000, state: emptyAgentState(), prompt: "Look at the page", tools: [tool], signal: new AbortController().signal });
+    assert.equal(result.content, "I see a Q.");
+    assert.equal(requests[1].messages.at(-2)?.role, "tool");
+    assert.deepEqual(requests[1].messages.at(-1)?.content, [
+      { type: "text", text: "Screenshot 200 × 100" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,AA==" } },
+    ]);
+    assert.equal(JSON.stringify(result.state).includes("data:image/png"), false);
+  });
+
   it("executes wait in an agent turn without requiring a connected page", async () => {
     const requests: Array<{ messages: ModelMessage[] }> = [];
     globalThis.fetch = async (_, init) => {

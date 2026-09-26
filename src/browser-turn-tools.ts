@@ -2,6 +2,7 @@ import type { AgentTool } from "./agent.ts";
 import { withReadApproval, type ApprovalPolicy, type ApprovalPrompt } from "./browser-approval.ts";
 import { domClickTool, domListTool, domReadTool, domWriteManyTool, domWriteTool, scrollAllTextTool } from "./dom-tools.ts";
 import { sendKeyTool, sendKeysTool } from "./keyboard-tools.ts";
+import { captureScreenshotTool, mouseTools, type ScreenshotFrame } from "./visual-tools.ts";
 import {
   capturePageTarget, hasPageAccess, listOpenTabsTool, navigationTool, pageContextTool, switchTabTool,
   type BrowserTabTarget, type PageTarget, type TabAction,
@@ -21,6 +22,7 @@ class BrowserTurnSession {
   private target: BrowserTabTarget;
   private pageTarget: PageTarget | null;
   private transition: Transition | null = null;
+  private screenshot: ScreenshotFrame | null = null;
 
   constructor(target: BrowserTabTarget, pageTarget: PageTarget | null) {
     this.target = target;
@@ -43,14 +45,20 @@ class BrowserTurnSession {
   afterNavigation(tabId: number, url: string, sourceUrl: string, newTab: boolean): void {
     this.target = { tabId, windowId: this.target.windowId, url, title: url };
     this.pageTarget = null;
+    this.screenshot = null;
     this.transition = { kind: newTab ? "new_tab" : "navigation", sourceUrl: newTab ? "" : sourceUrl, requestedUrl: url };
   }
 
   afterSwitch(tabId: number, url: string): void {
     this.target = { tabId, windowId: this.target.windowId, url, title: url };
     this.pageTarget = null;
+    this.screenshot = null;
     this.transition = { kind: "switch", sourceUrl: "", requestedUrl: url };
   }
+
+  setScreenshot(frame: ScreenshotFrame): void { this.screenshot = frame; }
+  getScreenshot(): ScreenshotFrame | null { return this.screenshot; }
+  clearScreenshot(): void { this.screenshot = null; }
 
   async page(signal: AbortSignal): Promise<PageTarget> {
     const deadline = Date.now() + pageWaitMs;
@@ -91,13 +99,21 @@ export function browserTurnTools(
   const session = new BrowserTurnSession(initialTab, initialPage);
   const pageTool = (create: (target: PageTarget) => AgentTool, read: boolean): AgentTool => {
     const definition = create(initialPage ?? initialTab).definition;
+    let pendingImage: { text: string; imageDataUrl: string } | null = null;
     return {
       definition,
       execute: async (args, signal) => {
         const target = await session.page(signal);
         const tool = create(target);
-        return (read ? withReadApproval(tool, target, options.approvalPolicy, options.approveRead) : tool).execute(args, signal);
+        const selected = read ? withReadApproval(tool, target, options.approvalPolicy, options.approveRead) : tool;
+        const result = await selected.execute(args, signal);
+        pendingImage = selected.takeImage?.() ?? null;
+        if (["dom_write", "dom_write_many", "dom_click", "send_key", "send_keys"].includes(definition.function.name)) {
+          session.clearScreenshot();
+        }
+        return result;
       },
+      takeImage: () => { const image = pendingImage; pendingImage = null; return image; },
     };
   };
 
@@ -144,6 +160,13 @@ export function browserTurnTools(
     },
   };
 
+  const visualMouseTool = (name: string) => pageTool((target) => {
+    const tool = mouseTools(target, () => session.getScreenshot(), () => session.clearScreenshot(), options.approveChange)
+      .find((candidate) => candidate.definition.function.name === name);
+    if (!tool) throw new Error(`Unknown mouse tool: ${name}`);
+    return tool;
+  }, false);
+
   return [
     pageTool(pageContextTool, true),
     pageTool(domListTool, true),
@@ -154,6 +177,8 @@ export function browserTurnTools(
     pageTool((target) => domClickTool(target, options.approveChange), false),
     pageTool((target) => sendKeyTool(target, options.approveChange), false),
     pageTool((target) => sendKeysTool(target, options.approveChange), false),
+    pageTool((target) => captureScreenshotTool(target, (frame) => session.setScreenshot(frame)), true),
+    ...["mouse_move", "mouse_click", "mouse_drag", "mouse_scroll"].map(visualMouseTool),
     listTool, navigateTool, switchTool,
   ];
 }

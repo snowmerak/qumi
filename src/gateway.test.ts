@@ -12,6 +12,27 @@ const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
 
 describe("Q Gateway client", () => {
+  it("sends screenshot images as vision content in both API modes", async () => {
+    const requests: Array<Record<string, any>> = [];
+    globalThis.fetch = async (_, init) => {
+      const body = JSON.parse(String(init?.body));
+      requests.push(body);
+      return new Response(JSON.stringify(requests.length === 1
+        ? { choices: [{ message: { content: "Q" } }] }
+        : { status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "Q" }] }] }), { status: 200 });
+    };
+    const messages = [{ role: "user" as const, content: "What is shown?", imageDataUrl: "data:image/png;base64,AA==" }];
+    await requestModel(settings, messages, [], "", new AbortController().signal);
+    await requestModel({ ...settings, apiMode: "responses" }, messages, [], "", new AbortController().signal);
+    assert.deepEqual(requests[0].messages[0].content, [
+      { type: "text", text: "What is shown?" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,AA==" } },
+    ]);
+    assert.deepEqual(requests[1].input[0].content, [
+      { type: "input_text", text: "What is shown?" },
+      { type: "input_image", image_url: "data:image/png;base64,AA==" },
+    ]);
+  });
   it("accepts the local address printed by q gateway and normalizes its base path", () => {
     assert.equal(normalizeGatewayUrl("http://127.0.0.1:53124/v1/"), settings.baseUrl);
     assert.equal(normalizeGatewayUrl("http://localhost:53124"), "http://localhost:53124/v1");
