@@ -775,12 +775,11 @@ export function App() {
     return events.length;
   }
 
-  async function send(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function send() {
     const content = draft.trim();
     const selections = [...selectedRegions];
     const contextWindow = settings.contextWindowOverride || models.find((model) => model.id === settings.model)?.contextLength || 0;
-    if (!content || sending || sessionsRef.current[activeSessionId]?.kind === "job" || connection !== "connected" || !settings.model || !contextWindow) return;
+    if (!content || requestController.current || sessionsRef.current[activeSessionId]?.kind === "job" || connection !== "connected" || !settings.model || !contextWindow) return;
     const controller = new AbortController();
     const executionLog = createExecutionLog(settings.model, !!pageTarget, settings.approvalPolicy);
     requestController.current = controller;
@@ -849,18 +848,26 @@ export function App() {
       setMessages([...messages, { role: "user", content, selections }, { role: "assistant", content: result.content, cachedTokens: result.cachedTokens }]);
       setSelectedRegions([]);
     } catch (cause) {
-      setDraft(content);
-      setError(controller.signal.aborted ? tr("requestCancelled") : cause instanceof Error ? localizeKnownError(locale, cause.message) : tr("responseFailed"));
+      if (requestController.current === controller) {
+        setDraft(content);
+        setError(controller.signal.aborted ? tr("requestCancelled") : cause instanceof Error ? localizeKnownError(locale, cause.message) : tr("responseFailed"));
+      }
     } finally {
       if (mcpConnection) void mcpConnection.close();
       void executionLog.finish().catch(() => setError((current) => current || tr("logSaveFailed")));
-      requestController.current = null;
-      setPendingPrompt("");
-      setStreamed("");
-      setThinking("");
-      setProgress("");
-      setSending(false);
+      if (requestController.current === controller) {
+        requestController.current = null;
+        setPendingPrompt("");
+        setStreamed("");
+        setThinking("");
+        setProgress("");
+        setSending(false);
+      }
     }
+  }
+
+  function stopSending(): void {
+    requestController.current?.abort();
   }
 
   const contextWindow = settings.contextWindowOverride || models.find((model) => model.id === settings.model)?.contextLength || 0;
@@ -933,7 +940,7 @@ export function App() {
             </div>
           </main>
 
-          <form className="composer" onSubmit={(event) => void send(event)}>
+          <form className="composer" onSubmit={(event) => event.preventDefault()}>
             {sessionsRef.current[activeSessionId]?.kind === "job" && <div className="mp-field__hint">{tr("jobSessionHint")}</div>}
             {pendingAction && <div className="navigation-request" role="dialog" aria-label={tr("browserActionConfirmation")}>
               <strong>{pendingAction.title}</strong>
@@ -945,8 +952,8 @@ export function App() {
             {pageTarget && <div className="composer__selection-actions"><button className="mp-button mp-button--secondary" type="button" onClick={() => void attachSelection()} disabled={sending || (!selectionLoading && selectedRegions.length >= 5)}>{tr(selectionLoading ? "cancelSelection" : "addRegion")}</button><span>{tr(selectionLoading ? "selectingRegionHint" : "selectRegionHint")}</span></div>}
             {!sending && <SelectionNotes selections={selectedRegions} locale={locale} onRemove={(index) => setSelectedRegions((current) => current.filter((_, itemIndex) => itemIndex !== index))} />}
             <label className="sr-only" htmlFor="chat-input">{tr("askQ")}</label>
-            <textarea id="chat-input" className="mp-textarea" rows={3} placeholder={tr("askQ")} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} disabled={!canSend} />
-            <div className="composer__footer"><span>{tr("localConnection")}</span>{sending ? <button className="mp-button mp-button--secondary" type="button" onClick={() => requestController.current?.abort()}>{tr("stop")}</button> : <button className="mp-button mp-button--primary" type="submit" disabled={!canSend || !draft.trim()}><Icon name="send" />{tr("send")}</button>}</div>
+            <textarea id="chat-input" className="mp-textarea" rows={3} placeholder={tr("askQ")} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!event.repeat) void send(); } }} disabled={!canSend} />
+            <div className="composer__footer"><span>{tr("localConnection")}</span>{sending ? <button key="stop" className="mp-button mp-button--secondary" type="button" onClick={stopSending}>{tr("stop")}</button> : <button key="send" className="mp-button mp-button--primary" type="button" onClick={() => void send()} disabled={!canSend || !draft.trim()}><Icon name="send" />{tr("send")}</button>}</div>
           </form>
         </>
       )}
