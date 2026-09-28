@@ -52,6 +52,12 @@ export function createJob(sessionId: string, title: string, prompt: string, sche
     nextRunAt: next, lastStartedAt: null, lastFinishedAt: null, status: "scheduled", error: "" };
 }
 
+export function upsertJob(jobs: ScheduledJob[], job: ScheduledJob): ScheduledJob[] {
+  const byId = new Map(jobs.map((current) => [current.id, current]));
+  byId.set(job.id, job);
+  return [...byId.values()];
+}
+
 function validJob(value: unknown): value is ScheduledJob {
   if (!value || typeof value !== "object") return false;
   const job = value as Partial<ScheduledJob>;
@@ -62,7 +68,7 @@ function validJob(value: unknown): value is ScheduledJob {
 
 export async function loadJobs(): Promise<ScheduledJob[]> {
   const { [indexKey]: raw } = await chrome.storage.local.get(indexKey);
-  const ids = Array.isArray(raw) ? raw.filter((id): id is string => typeof id === "string") : [];
+  const ids = Array.isArray(raw) ? [...new Set(raw.filter((id): id is string => typeof id === "string"))] : [];
   const stored = await chrome.storage.local.get(ids.map(jobKey));
   return ids.map((id) => stored[jobKey(id)]).filter(validJob);
 }

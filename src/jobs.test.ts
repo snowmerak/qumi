@@ -1,6 +1,6 @@
 import { it } from "node:test";
 import assert from "node:assert/strict";
-import { createJob, nextRunAt } from "./jobs.ts";
+import { createJob, nextRunAt, upsertJob } from "./jobs.ts";
 
 it("schedules one-time jobs only in the future", () => {
   const now = Date.now();
@@ -17,4 +17,12 @@ it("repeats at a local wall-clock time instead of drifting by elapsed hours", ()
   const weekly = nextRunAt({ type: "weekly", day: 1, hour: 9, minute: 0 }, after)!;
   assert.equal(new Date(weekly).getDay(), 1);
   assert.equal(new Date(weekly).getDate(), 5);
+});
+
+it("keeps one visible entry when storage refresh and local creation return the same job", () => {
+  const job = createJob("session", "title", "prompt", { type: "once", at: Date.now() + 60_000 });
+  const updated = { ...job, status: "paused" as const };
+  const jobs = upsertJob([job, job], updated);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0], updated);
 });

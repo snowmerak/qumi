@@ -20,7 +20,7 @@ import { connectMcpServer, connectMcpServers, validateMcpServer } from "./mcp-to
 import { forgetMcpAuthorization } from "./mcp-oauth";
 import { createSkill, createSkillTool, installSkillFiles, type InstalledSkill } from "./skills";
 import { addSession, loadSession, loadSessions, newSession, saveSession, setActiveSession, type Session } from "./sessions";
-import { addJob, createJob, loadJobs, nextRunAt, removeJob, saveJob, syncAlarm, type JobSchedule, type ScheduledJob } from "./jobs";
+import { addJob, createJob, loadJobs, nextRunAt, removeJob, saveJob, syncAlarm, upsertJob, type JobSchedule, type ScheduledJob } from "./jobs";
 
 type Connection = "checking" | "connected" | "disconnected";
 type PendingAction = { title: string; detail: string; decide: (approved: boolean) => void };
@@ -740,7 +740,7 @@ export function App() {
     await addJob(job);
     sessionsRef.current[session.id] = session;
     setSessions((items) => [...items, session]);
-    setJobs((items) => [...items, job]);
+    setJobs((items) => upsertJob(items, job));
   }
 
   async function persistSkills(next: InstalledSkill[]): Promise<void> {
@@ -755,7 +755,7 @@ export function App() {
     if (!paused && updated.nextRunAt === null) throw new Error(tr("jobPastTime"));
     await saveJob(updated);
     await syncAlarm(updated);
-    setJobs((items) => items.map((item) => item.id === updated.id ? updated : item));
+    setJobs((items) => upsertJob(items, updated));
   }
 
   async function deleteJob(id: string): Promise<void> {
