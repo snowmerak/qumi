@@ -20,6 +20,7 @@ export interface SavedState {
 
 const storageKey = "qumiState";
 const mcpServersKey = "qumiMcpServers";
+const skillsKey = "qumiSkills";
 
 export const emptyState: SavedState = {
   settings: { baseUrl: "", apiKey: "", model: "", apiMode: "chat_completions", contextWindowOverride: 0, approvalPolicy: "changes", language: "auto", mcpServers: [] },
@@ -55,6 +56,12 @@ function storedMcpServers(value: unknown): McpServerSettings[] {
   }) : [];
 }
 
+function storedSkills(value: unknown): InstalledSkill[] {
+  return Array.isArray(value) ? value.flatMap((entry) => {
+    try { return [parseSkill(entry.files)]; } catch { return []; }
+  }) : [];
+}
+
 export async function saveMcpServers(servers: McpServerSettings[]): Promise<void> {
   const validated = servers.map(validateMcpServer);
   if (typeof chrome !== "undefined" && chrome.storage?.local) {
@@ -64,15 +71,23 @@ export async function saveMcpServers(servers: McpServerSettings[]): Promise<void
   }
 }
 
+export async function saveSkills(skills: InstalledSkill[]): Promise<void> {
+  const validated = skills.map((skill) => parseSkill(skill.files));
+  if (typeof chrome !== "undefined" && chrome.storage?.local) await chrome.storage.local.set({ [skillsKey]: validated });
+  else localStorage.setItem(skillsKey, JSON.stringify(validated));
+}
+
 export async function loadState(): Promise<SavedState> {
   const stored = typeof chrome !== "undefined" && chrome.storage?.local
-    ? await chrome.storage.local.get([storageKey, mcpServersKey])
-    : { [storageKey]: JSON.parse(localStorage.getItem(storageKey) || "null"), [mcpServersKey]: JSON.parse(localStorage.getItem(mcpServersKey) || "null") };
+    ? await chrome.storage.local.get([storageKey, mcpServersKey, skillsKey])
+    : { [storageKey]: JSON.parse(localStorage.getItem(storageKey) || "null"), [mcpServersKey]: JSON.parse(localStorage.getItem(mcpServersKey) || "null"), [skillsKey]: JSON.parse(localStorage.getItem(skillsKey) || "null") };
   const value = stored[storageKey];
   const independentServers = stored[mcpServersKey];
 
-  if (!value || typeof value !== "object") return { ...emptyState, settings: { ...emptyState.settings, mcpServers: storedMcpServers(independentServers) } };
+  if (!value || typeof value !== "object") return { ...emptyState, settings: { ...emptyState.settings, mcpServers: storedMcpServers(independentServers) }, skills: storedSkills(stored[skillsKey]) };
   const saved = value as Partial<SavedState> & { conversationId?: unknown };
+  const skills = storedSkills(Array.isArray(stored[skillsKey]) ? stored[skillsKey] : saved.skills);
+  if (!Array.isArray(stored[skillsKey]) && skills.length) await saveSkills(skills);
   const messages = storedMessages(saved.messages);
   const oldContext = messages.map(({ role, content }): ModelMessage => ({ role, content }));
   const agent = saved.agent && typeof saved.agent === "object" ? saved.agent : emptyAgentState();
@@ -89,9 +104,7 @@ export async function loadState(): Promise<SavedState> {
       mcpServers: storedMcpServers(Array.isArray(independentServers) ? independentServers : saved.settings?.mcpServers),
     },
     messages,
-    skills: Array.isArray(saved.skills) ? saved.skills.flatMap((entry) => {
-      try { return [parseSkill(entry.files)]; } catch { return []; }
-    }) : [],
+    skills,
     agent: {
       transcript: saved.agent ? modelMessages(agent.transcript) : oldContext,
       context: saved.agent ? modelMessages(agent.context) : oldContext,

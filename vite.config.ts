@@ -7,7 +7,8 @@ export default defineConfig({
   base: "./",
   build: {
     rollupOptions: {
-      input: resolve(import.meta.dirname, "sidepanel.html"),
+      input: { sidepanel: resolve(import.meta.dirname, "sidepanel.html"), background: resolve(import.meta.dirname, "src/background.ts") },
+      output: { entryFileNames: (chunk) => chunk.name === "background" ? "background.js" : "assets/[name]-[hash].js" },
     },
   },
 });

@@ -1,4 +1,4 @@
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { AgentTool } from "./agent.ts";
 
 export interface InstalledSkill {
@@ -49,6 +49,37 @@ export function parseSkill(files: Record<string, string>): InstalledSkill {
   return { id: name, name, description, tags, files: normalized };
 }
 
+export function createSkill(name: string, description: string, instructions: string): InstalledSkill {
+  const body = instructions.trim();
+  if (!body) throw new Error("스킬 본문이 필요합니다.");
+  const header = stringifyYaml({ name: name.trim(), description: description.trim() }).trimEnd();
+  return parseSkill({ "SKILL.md": `---\n${header}\n---\n\n${body}\n` });
+}
+
+export function createSkillTool(register: (skill: InstalledSkill) => Promise<void>): AgentTool {
+  return {
+    definition: { type: "function", function: {
+      name: "create_skill", description: "Create and install a reusable Agent Skill in Qumi. Use concise instructions that apply to future tasks; registration persists across browser restarts.",
+      parameters: { type: "object", properties: {
+        name: { type: "string", description: "Lowercase kebab-case skill identifier." },
+        description: { type: "string", description: "When this skill should be used." },
+        instructions: { type: "string", description: "Complete SKILL.md body in Markdown." },
+      }, required: ["name", "description", "instructions"], additionalProperties: false },
+    } },
+    execute: async (value, signal) => {
+      signal.throwIfAborted();
+      const args = value as { name?: unknown; description?: unknown; instructions?: unknown };
+      if (typeof args?.name !== "string" || typeof args?.description !== "string" || typeof args?.instructions !== "string") {
+        throw new Error("name, description, instructions가 필요합니다.");
+      }
+      const skill = createSkill(args.name, args.description, args.instructions);
+      signal.throwIfAborted();
+      await register(skill);
+      return JSON.stringify({ installed: true, id: skill.id, name: skill.name });
+    },
+  };
+}
+
 export async function installSkillFiles(files: FileList | File[]): Promise<InstalledSkill[]> {
   const selected = Array.from(files).map((file) => ({ file, path: relativePath(file.webkitRelativePath || file.name) }));
   const roots = selected.filter(({ path }) => path === "SKILL.md" || path.endsWith("/SKILL.md"))
@@ -92,7 +123,6 @@ export function searchSkills(skills: InstalledSkill[], query: string, limit = 8)
 }
 
 export function skillTools(skills: InstalledSkill[], maxResultBytes = 48_000): AgentTool[] {
-  if (!skills.length) return [];
   return [
     { definition: { type: "function", function: { name: "search_skills", description: "Search installed Agent Skills by task-specific keywords. Results contain metadata only; call get_skill for full instructions.", parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "integer" } }, required: ["query"], additionalProperties: false } } }, execute: async (value, signal) => {
       signal.throwIfAborted();

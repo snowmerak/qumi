@@ -356,6 +356,7 @@ export async function runTurn(options: {
   prompt: string;
   tools?: AgentTool[];
   skills?: InstalledSkill[];
+  skillToolsWhenEmpty?: boolean;
   signal: AbortSignal;
   locale?: Locale;
   onEvent?: (event: AgentEvent) => void;
@@ -365,7 +366,7 @@ export async function runTurn(options: {
   if (!Number.isSafeInteger(contextWindow) || contextWindow <= 0) throw new Error("모델 문맥 길이를 설정해 주세요.");
   if (!prompt.trim()) throw new Error("질문을 입력해 주세요.");
   const skillResultBytes = Math.min(48_000, Math.max(1_024, Math.floor(contextWindow * 1.5) - 512));
-  const tools = [...(options.tools ?? []), ...skillTools(options.skills ?? [], skillResultBytes), waitTool];
+  const tools = [...(options.tools ?? []), ...(options.skills?.length || options.skillToolsWhenEmpty ? skillTools(options.skills ?? [], skillResultBytes) : []), waitTool];
   const availableTools = [...tools, ...taskTools.map((definition) => ({ definition }))];
   const controller = new AbortController();
   const trace = (event: AgentTraceEvent) => { try { options.onTrace?.(event); } catch { /* Logging never changes the turn. */ } };

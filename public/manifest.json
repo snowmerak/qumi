@@ -19,11 +19,12 @@
     }
   },
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "side_panel": {
     "default_path": "sidepanel.html"
   },
-  "permissions": ["sidePanel", "storage", "scripting", "tabs", "debugger", "identity"],
+  "permissions": ["sidePanel", "storage", "scripting", "tabs", "debugger", "identity", "alarms"],
   "host_permissions": ["http://*/*", "https://*/*"]
 }

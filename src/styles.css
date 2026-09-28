@@ -15,6 +15,7 @@
 
 .app-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
@@ -29,6 +30,7 @@
 .brand h1 { margin: 0; font-size: 1.24rem; line-height: 1.2; letter-spacing: -0.03em; }
 .brand__mark { display: grid; place-items: center; width: 32px; height: 32px; color: var(--mp-accent-200); font-size: 1.7rem; font-weight: 800; line-height: 1; letter-spacing: -0.1em; }
 .header-actions { gap: var(--space-2); }
+.header-link.mp-button { min-width: 0; min-height: 30px; padding: 4px 6px; font-size: 0.72rem; }
 .connection { display: inline-flex; align-items: center; gap: 7px; padding: 7px 9px; border-radius: var(--radius-sm); color: var(--mp-text-secondary); background: var(--mp-bg-interactive); font-size: 0.72rem; white-space: nowrap; }
 .connection__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--mp-neutral-base); }
 .connection--connected .connection__dot { background: var(--mp-success-base); }
@@ -40,6 +42,12 @@
 .model-bar .mp-field { flex: 1; }
 .model-bar .mp-select { min-width: 0; }
 .new-chat { margin-bottom: 1px; }
+.session-row.mp-button { display: flex; width: 100%; flex-direction: column; align-items: flex-start; gap: 4px; padding: 10px; text-align: left; }
+.session-row small { color: var(--mp-text-muted); font-size: 0.68rem; }
+.session-row--active { box-shadow: inset 2px 0 0 var(--mp-accent-500); }
+.job-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.job-actions .mp-button { min-height: 28px; padding: 4px 6px; font-size: 0.7rem; }
+.settings-form .mp-textarea { min-height: 88px; }
 
 .page-bar { display: flex; align-items: center; gap: var(--space-2); padding: 10px 20px; background: var(--mp-bg-inset); box-shadow: 0 1px 0 var(--mp-line-soft); }
 .page-bar__context { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
@@ -57,6 +65,25 @@
 .message { display: grid; gap: 7px; min-width: 0; }
 .message__label { color: var(--mp-text-muted); font-family: var(--font-mono); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; }
 .message__content { max-width: 100%; margin: 0; padding: 12px 14px; border-radius: var(--radius-md); color: var(--mp-text-primary); background: var(--mp-bg-surface); font-size: 0.88rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.message__content--markdown { min-width: 0; overflow-x: auto; white-space: normal; }
+.message__content--markdown > :first-child { margin-top: 0; }
+.message__content--markdown > :last-child { margin-bottom: 0; }
+.message__content--markdown p, .message__content--markdown ul, .message__content--markdown ol, .message__content--markdown blockquote, .message__content--markdown pre, .message__content--markdown table { margin: 0.65em 0; }
+.message__content--markdown h1, .message__content--markdown h2, .message__content--markdown h3, .message__content--markdown h4, .message__content--markdown h5, .message__content--markdown h6 { margin: 1em 0 0.45em; font-size: 1em; line-height: 1.4; }
+.message__content--markdown h1 { font-size: 1.3em; }
+.message__content--markdown h2 { font-size: 1.16em; }
+.message__content--markdown ul, .message__content--markdown ol { padding-left: 1.5em; }
+.message__content--markdown li + li { margin-top: 0.25em; }
+.message__content--markdown a { color: var(--mp-accent-200); text-decoration: underline; text-underline-offset: 2px; }
+.message__content--markdown code, .message__content--markdown pre { font-family: var(--font-mono); font-size: 0.88em; }
+.message__content--markdown :not(pre) > code { padding: 0.1em 0.3em; border-radius: var(--radius-sm); background: var(--mp-bg-inset); }
+.message__content--markdown pre { max-width: 100%; padding: 10px 12px; border-radius: var(--radius-sm); overflow-x: auto; background: var(--mp-bg-inset); }
+.message__content--markdown pre code { padding: 0; background: transparent; white-space: pre; }
+.message__content--markdown blockquote { padding-left: 0.8em; border-left: 3px solid var(--mp-line-soft); color: var(--mp-text-secondary); }
+.message__content--markdown table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.message__content--markdown th, .message__content--markdown td { padding: 5px 8px; border: 1px solid var(--mp-line-soft); text-align: left; }
+.message__content--markdown hr { border: 0; border-top: 1px solid var(--mp-line-soft); }
+.message__content--markdown img { max-width: 100%; height: auto; }
 .message--user { margin-left: 26px; }
 .message--user .message__content { background: var(--mp-bg-elevated); }
 .message__meta { margin: 0; color: var(--mp-text-muted); font-family: var(--font-mono); font-size: 0.67rem; }

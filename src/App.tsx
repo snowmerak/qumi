@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactElement } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   listModelDetails,
   normalizeGatewayUrl,
@@ -9,14 +11,16 @@ import { emptyAgentState, runTurn, type AgentState } from "./agent";
 import { approvalPolicyFrom, requiresBrowserApproval } from "./browser-approval";
 import { browserTurnTools } from "./browser-turn-tools";
 import { clearExecutionLog, createExecutionLog, readExecutionLog } from "./execution-log";
-import { emptyState, loadState, saveMcpServers, saveState, type AppSettings } from "./storage";
+import { emptyState, loadState, saveMcpServers, saveSkills, saveState, type AppSettings } from "./storage";
 import { canReadPages, capturePageTarget, getActiveBrowserTab, getActivePageCandidate, hasPageAccess, requestPageAccess, type TabAction, type PageCandidate, type PageTarget } from "./page-context";
 import { promptWithSelections, type PageSelection } from "./page-selection";
 import { cancelPageRegion, capturePageRegion } from "./page-region";
 import { formatNumber, languagePreferenceFrom, localizeApprovalDetail, localizeApprovalTitle, localizeKnownError, resolveLocale, translate, type LanguagePreference, type Locale, type MessageKey } from "./i18n";
 import { connectMcpServer, connectMcpServers, validateMcpServer } from "./mcp-tools";
 import { forgetMcpAuthorization } from "./mcp-oauth";
-import { installSkillFiles, type InstalledSkill } from "./skills";
+import { createSkill, createSkillTool, installSkillFiles, type InstalledSkill } from "./skills";
+import { addSession, loadSession, loadSessions, newSession, saveSession, setActiveSession, type Session } from "./sessions";
+import { addJob, createJob, loadJobs, nextRunAt, removeJob, saveJob, syncAlarm, type JobSchedule, type ScheduledJob } from "./jobs";
 
 type Connection = "checking" | "connected" | "disconnected";
 type PendingAction = { title: string; detail: string; decide: (approved: boolean) => void };
@@ -35,6 +39,16 @@ function Icon({ name }: { name: "settings" | "back" | "plus" | "send" | "eye" })
 function Status({ connection, locale }: { connection: Connection; locale: Locale }) {
   const label = translate(locale, connection);
   return <span className={`connection connection--${connection}`} role="status"><span className="connection__dot" />{label}</span>;
+}
+
+const markdownPlugins = [remarkGfm];
+
+function MarkdownMessage({ content }: { content: string }) {
+  return <div className="message__content message__content--markdown">
+    <ReactMarkdown remarkPlugins={markdownPlugins} components={{
+      a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+    }}>{content}</ReactMarkdown>
+  </div>;
 }
 
 function SelectionNote({ selection, number, onRemove, locale }: { selection: PageSelection; number: number; onRemove?: () => void; locale: Locale }) {
@@ -66,7 +80,7 @@ interface SettingsViewProps {
   onClose: () => void;
   onSave: (settings: AppSettings, models: GatewayModel[]) => void;
   skills: InstalledSkill[];
-  onSkillsChange: (skills: InstalledSkill[]) => void;
+  onSkillsChange: (skills: InstalledSkill[]) => Promise<void>;
   onExportLog: () => Promise<number>;
   onClearLog: () => Promise<void>;
   onLanguageChange: (language: LanguagePreference) => void;
@@ -91,6 +105,9 @@ function SettingsView({ settings, availableModels, onClose, onSave, skills, onSk
   const [mcpMessage, setMcpMessage] = useState("");
   const [mcpBusy, setMcpBusy] = useState(false);
   const [skillMessage, setSkillMessage] = useState("");
+  const [skillName, setSkillName] = useState("");
+  const [skillDescription, setSkillDescription] = useState("");
+  const [skillInstructions, setSkillInstructions] = useState("");
   const locale = resolveLocale(draft.language);
   const tr = (key: MessageKey, variables?: Record<string, string | number>) => translate(locale, key, variables);
   const sameGateway = draft.baseUrl === settings.baseUrl && draft.apiKey === settings.apiKey;
@@ -161,8 +178,17 @@ function SettingsView({ settings, availableModels, onClose, onSave, skills, onSk
         if (index >= 0) next[index] = skill;
         else next.push(skill);
       }
-      onSkillsChange(next);
+      await onSkillsChange(next);
       setSkillMessage(tr("skillsInstalled", { count: imported.length }));
+    } catch (error) { setSkillMessage(error instanceof Error ? localizeKnownError(locale, error.message) : tr("skillImportFailed")); }
+  }
+
+  async function registerWrittenSkill() {
+    try {
+      const skill = createSkill(skillName, skillDescription, skillInstructions);
+      await onSkillsChange([...skills.filter((item) => item.id !== skill.id), skill]);
+      setSkillName(""); setSkillDescription(""); setSkillInstructions("");
+      setSkillMessage(tr("skillsInstalled", { count: 1 }));
     } catch (error) { setSkillMessage(error instanceof Error ? localizeKnownError(locale, error.message) : tr("skillImportFailed")); }
   }
 
@@ -304,9 +330,13 @@ function SettingsView({ settings, availableModels, onClose, onSave, skills, onSk
         <div className="mp-field">
           <span className="mp-field__label">{tr("agentSkills")}</span>
           <p className="mp-field__hint">{tr("skillHint")}</p>
-          {skills.map((skill) => <div className="integration-row" key={skill.id}><span><strong>{skill.name}</strong><small>{skill.description}</small></span><button className="mp-button mp-button--ghost" type="button" onClick={() => onSkillsChange(skills.filter((item) => item.id !== skill.id))}>{tr("remove")}</button></div>)}
+          {skills.map((skill) => <div className="integration-row" key={skill.id}><span><strong>{skill.name}</strong><small>{skill.description}</small></span><button className="mp-button mp-button--ghost" type="button" onClick={() => void onSkillsChange(skills.filter((item) => item.id !== skill.id)).catch((cause) => setSkillMessage(cause instanceof Error ? cause.message : tr("skillImportFailed")))}>{tr("remove")}</button></div>)}
           <label className="mp-button mp-button--secondary integration-upload">{tr("importSkillFile")}<input type="file" accept=".md,text/markdown" onChange={(event) => { void importSkills(event.target.files); event.target.value = ""; }} /></label>
           <label className="mp-button mp-button--secondary integration-upload">{tr("importSkillFolder")}<input type="file" multiple {...{ webkitdirectory: "" }} onChange={(event) => { void importSkills(event.target.files); event.target.value = ""; }} /></label>
+          <input className="mp-input" aria-label={tr("skillName")} placeholder={tr("skillName")} value={skillName} onChange={(event) => setSkillName(event.target.value)} />
+          <input className="mp-input" aria-label={tr("skillDescription")} placeholder={tr("skillDescription")} value={skillDescription} onChange={(event) => setSkillDescription(event.target.value)} />
+          <textarea className="mp-textarea" aria-label={tr("skillInstructions")} placeholder={tr("skillInstructions")} value={skillInstructions} onChange={(event) => setSkillInstructions(event.target.value)} />
+          <button className="mp-button mp-button--secondary" type="button" onClick={() => void registerWrittenSkill()}>{tr("createSkill")}</button>
           {skillMessage && <p className="mp-field__hint" role="status">{skillMessage}</p>}
         </div>
         <div className="mp-field">
@@ -326,15 +356,86 @@ function SettingsView({ settings, availableModels, onClose, onSave, skills, onSk
   );
 }
 
+function JobsView({ jobs, locale, onClose, onCreate, onToggle, onDelete, onOpen }: {
+  jobs: ScheduledJob[]; locale: Locale; onClose: () => void;
+  onCreate: (title: string, prompt: string, schedule: JobSchedule) => Promise<void>;
+  onToggle: (job: ScheduledJob) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => void;
+}) {
+  const tr = (key: MessageKey) => translate(locale, key);
+  const [title, setTitle] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [type, setType] = useState<JobSchedule["type"]>("once");
+  const [at, setAt] = useState("");
+  const [time, setTime] = useState("09:00");
+  const [day, setDay] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const date = (timestamp: number) => new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(timestamp);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true); setError("");
+    try {
+      const [hour, minute] = time.split(":").map(Number);
+      const schedule: JobSchedule = type === "once" ? { type, at: new Date(at).getTime() }
+        : type === "daily" ? { type, hour, minute } : { type, day, hour, minute };
+      await onCreate(title, prompt, schedule);
+      setTitle(""); setPrompt(""); setAt("");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : tr("jobCreateFailed")); }
+    finally { setBusy(false); }
+  }
+
+  return <div className="settings-view">
+    <button className="mp-button mp-button--ghost back-button" type="button" onClick={onClose}><Icon name="back" />{tr("backToChat")}</button>
+    <div className="settings-heading"><h2>{tr("scheduledJobs")}</h2><p>{tr("jobHint")}</p></div>
+    <form className="settings-form" onSubmit={(event) => void submit(event)}>
+      <input className="mp-input" required aria-label={tr("jobTitle")} placeholder={tr("jobTitle")} value={title} onChange={(event) => setTitle(event.target.value)} />
+      <textarea className="mp-textarea" required aria-label={tr("jobPrompt")} placeholder={tr("jobPrompt")} value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+      <select className="mp-select" aria-label={tr("jobSchedule")} value={type} onChange={(event) => setType(event.target.value as JobSchedule["type"])}>
+        <option value="once">{tr("jobOnce")}</option><option value="daily">{tr("jobDaily")}</option><option value="weekly">{tr("jobWeekly")}</option>
+      </select>
+      {type === "once" ? <input className="mp-input" required type="datetime-local" aria-label={tr("jobRunAt")} value={at} onChange={(event) => setAt(event.target.value)} /> : <>
+        {type === "weekly" && <select className="mp-select" aria-label={tr("jobWeekday")} value={day} onChange={(event) => setDay(Number(event.target.value))}>{Array.from({ length: 7 }, (_, index) => <option key={index} value={index}>{new Intl.DateTimeFormat(locale, { weekday: "long" }).format(new Date(2024, 0, 7 + index))}</option>)}</select>}
+        <input className="mp-input" required type="time" aria-label={tr("jobRunAt")} value={time} onChange={(event) => setTime(event.target.value)} />
+      </>}
+      <button className="mp-button mp-button--primary" type="submit" disabled={busy}>{tr("addJob")}</button>
+    </form>
+    {error && <p className="composer__error" role="alert">{error}</p>}
+    <div className="settings-heading"><h2>{tr("jobList")}</h2></div>
+    <div className="integration-list">{jobs.map((job) => <div className="integration-row" key={job.id}>
+      <span><strong>{job.title}</strong><small>{tr(job.status === "running" ? "jobRunning" : job.status === "completed" ? "jobCompleted" : job.status === "failed" ? "jobFailed" : job.status === "paused" ? "jobPaused" : "jobScheduled")}{job.nextRunAt ? ` · ${date(job.nextRunAt)}` : ""}</small>{job.error && <small className="page-bar__error">{job.error}</small>}</span>
+      <div className="job-actions"><button className="mp-button mp-button--ghost" type="button" onClick={() => onOpen(job.sessionId)}>{tr("openSession")}</button>
+        {job.nextRunAt !== null && <button className="mp-button mp-button--ghost" type="button" onClick={() => void onToggle(job).catch((cause) => setError(cause instanceof Error ? cause.message : tr("jobCreateFailed")))}>{tr(job.status === "paused" ? "resumeJob" : "pauseJob")}</button>}
+        <button className="mp-button mp-button--ghost" type="button" onClick={() => void onDelete(job.id).catch((cause) => setError(cause instanceof Error ? cause.message : tr("jobCreateFailed")))}>{tr("remove")}</button>
+      </div>
+    </div>)}</div>
+  </div>;
+}
+
+function SessionsView({ sessions, activeId, locale, onClose, onOpen }: { sessions: Session[]; activeId: string; locale: Locale; onClose: () => void; onOpen: (id: string) => void }) {
+  const tr = (key: MessageKey) => translate(locale, key);
+  return <div className="settings-view">
+    <button className="mp-button mp-button--ghost back-button" type="button" onClick={onClose}><Icon name="back" />{tr("backToChat")}</button>
+    <div className="settings-heading"><h2>{tr("sessions")}</h2></div>
+    <div className="integration-list">{[...sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((session) => <button className={`session-row mp-button mp-button--ghost ${session.id === activeId ? "session-row--active" : ""}`} type="button" key={session.id} onClick={() => onOpen(session.id)}>
+      <strong>{session.title || tr("newChat")}</strong><small>{session.kind === "job" ? tr("scheduledJobs") : session.model.model} · {new Intl.DateTimeFormat(locale, { dateStyle: "short", timeStyle: "short" }).format(session.updatedAt)}</small>
+    </button>)}</div>
+  </div>;
+}
+
 export function App() {
   const [ready, setReady] = useState(false);
-  const [view, setView] = useState<"chat" | "settings">("chat");
+  const [view, setView] = useState<"chat" | "settings" | "sessions" | "jobs">("chat");
   const [settings, setSettings] = useState<AppSettings>(emptyState.settings);
   const [skills, setSkills] = useState<InstalledSkill[]>([]);
   const locale = resolveLocale(settings.language);
   const tr = (key: MessageKey, variables?: Record<string, string | number>) => translate(locale, key, variables);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [agent, setAgent] = useState<AgentState>(emptyAgentState);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState("");
+  const sessionsRef = useRef<Record<string, Session>>({});
+  const [jobs, setJobs] = useState<ScheduledJob[]>([]);
   const [models, setModels] = useState<GatewayModel[]>([]);
   const [connection, setConnection] = useState<Connection>("disconnected");
   const [draft, setDraft] = useState("");
@@ -361,12 +462,20 @@ export function App() {
 
   useEffect(() => {
     let active = true;
-    void loadState().then((saved) => {
+    void loadState().then(async (saved) => {
       if (!active) return;
-      setSettings(saved.settings);
+      const loaded = await loadSessions(saved);
+      const loadedJobs = typeof chrome !== "undefined" && chrome.storage?.local ? await loadJobs() : [];
+      if (!active) return;
+      sessionsRef.current = Object.fromEntries(loaded.sessions.map((session) => [session.id, session]));
+      const selected = sessionsRef.current[loaded.activeId];
+      setSettings({ ...saved.settings, ...selected.model });
       setSkills(saved.skills);
-      setMessages(saved.messages);
-      setAgent(saved.agent);
+      setMessages(selected.messages);
+      setAgent(selected.agent);
+      setSessions(loaded.sessions);
+      setActiveSessionId(selected.id);
+      setJobs(loadedJobs);
       setReady(true);
       if (!saved.settings.baseUrl) return;
       setConnection("checking");
@@ -378,19 +487,45 @@ export function App() {
         }
         setModels(found);
         setConnection("connected");
-        if (!found.some((model) => model.id === saved.settings.model)) {
-          setSettings({ ...saved.settings, model: found[0].id, contextWindowOverride: 0 });
-          setMessages([]);
-          setAgent(emptyAgentState());
-        }
+        if (!found.some((model) => model.id === selected.model.model)) setSettings({ ...saved.settings, model: found[0].id, contextWindowOverride: 0 });
       }).catch(() => { if (active) setConnection("disconnected"); });
     }).catch(() => { if (active) { setReady(true); setError(tr("readSettingsFailed")); } });
     return () => { active = false; };
   }, []);
 
   useEffect(() => {
-    if (ready) void saveState({ settings, messages, agent, skills }).catch(() => setError(tr("saveConversationFailed")));
-  }, [ready, settings, messages, agent, skills]);
+    if (ready) void saveState({ ...emptyState, settings }).catch(() => setError(tr("saveConversationFailed")));
+  }, [ready, settings]);
+
+  useEffect(() => {
+    const current = sessionsRef.current[activeSessionId];
+    if (!ready || !current || current.kind === "job") return;
+    const title = current.title || messages.find((message) => message.role === "user")?.content.slice(0, 80) || "";
+    const updated = { ...current, messages, agent, title, updatedAt: Date.now() };
+    sessionsRef.current[activeSessionId] = updated;
+    setSessions((items) => items.map((item) => item.id === updated.id ? updated : item));
+    void saveSession(updated).catch(() => setError(tr("saveConversationFailed")));
+  }, [ready, activeSessionId, messages, agent]);
+
+  useEffect(() => {
+    if (typeof chrome === "undefined" || !chrome.storage?.onChanged) return;
+    const changed = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+      if (area !== "local") return;
+      if (Object.keys(changes).some((key) => key.startsWith("qumiJob:"))) void loadJobs().then(setJobs);
+      const storedSkills = changes.qumiSkills?.newValue;
+      if (Array.isArray(storedSkills)) setSkills((current) => JSON.stringify(current) === JSON.stringify(storedSkills) ? current : storedSkills as InstalledSkill[]);
+      for (const [key, change] of Object.entries(changes)) {
+        if (!key.startsWith("qumiSession:")) continue;
+        const current = change.newValue as Session | undefined;
+        if (current?.kind !== "job") continue;
+        sessionsRef.current[current.id] = current;
+        setSessions((items) => items.map((item) => item.id === current.id ? current : item));
+        if (current.id === activeSessionId) { setMessages(current.messages); setAgent(current.agent); }
+      }
+    };
+    chrome.storage.onChanged.addListener(changed);
+    return () => chrome.storage.onChanged.removeListener(changed);
+  }, [activeSessionId]);
 
   useEffect(() => {
     messagesEnd.current?.scrollIntoView({ behavior: sending ? "auto" : "smooth" });
@@ -535,8 +670,7 @@ export function App() {
   function saveSettings(next: AppSettings, found: GatewayModel[]) {
     const providerSettingsChanged = next.baseUrl !== settings.baseUrl || next.apiKey !== settings.apiKey || next.model !== settings.model || next.apiMode !== settings.apiMode || next.contextWindowOverride !== settings.contextWindowOverride;
     if (providerSettingsChanged) {
-      setMessages([]);
-      setAgent(emptyAgentState());
+      void startNewSession(next);
       setSelectedRegions([]);
     }
     setSettings(next);
@@ -552,11 +686,81 @@ export function App() {
   }
 
   function changeModel(model: string) {
-    setSettings({ ...settings, model, apiMode: model.startsWith("codex/") ? "chat_completions" : settings.apiMode, contextWindowOverride: 0 });
-    setMessages([]);
-    setAgent(emptyAgentState());
+    const next = { ...settings, model, apiMode: model.startsWith("codex/") ? "chat_completions" as const : settings.apiMode, contextWindowOverride: 0 };
+    setSettings(next);
+    void startNewSession(next);
     setSelectedRegions([]);
     setError("");
+  }
+
+  async function startNewSession(next: AppSettings = settings): Promise<void> {
+    try {
+      const current = sessionsRef.current[activeSessionId];
+      if (current?.kind === "chat") await saveSession({ ...current, messages, agent, updatedAt: Date.now() });
+      const contextWindow = next.contextWindowOverride || models.find((entry) => entry.id === next.model)?.contextLength || 0;
+      const session = newSession(next, "chat", "", contextWindow);
+      await addSession(session);
+      await setActiveSession(session.id);
+      sessionsRef.current[session.id] = session;
+      setSessions((items) => [...items, session]);
+      setActiveSessionId(session.id);
+      setMessages([]);
+      setAgent(emptyAgentState());
+      setSelectedRegions([]);
+      setError("");
+      setView("chat");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : tr("saveConversationFailed")); }
+  }
+
+  async function openSession(id: string): Promise<void> {
+    if (sending) return;
+    try {
+      const session = await loadSession(id);
+      if (!session) throw new Error(tr("saveConversationFailed"));
+      const current = sessionsRef.current[activeSessionId];
+      if (current?.kind === "chat" && current.id !== id) await saveSession({ ...current, messages, agent, updatedAt: Date.now() });
+      await setActiveSession(id);
+      sessionsRef.current[id] = session;
+      setActiveSessionId(id);
+      setMessages(session.messages);
+      setAgent(session.agent);
+      setSettings((current) => ({ ...current, ...session.model }));
+      setSelectedRegions([]);
+      setError("");
+      setView("chat");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : tr("saveConversationFailed")); }
+  }
+
+  async function scheduleJob(title: string, prompt: string, schedule: JobSchedule): Promise<void> {
+    const contextWindow = settings.contextWindowOverride || models.find((model) => model.id === settings.model)?.contextLength || 0;
+    if (!settings.baseUrl || !settings.model || !contextWindow) throw new Error(tr("contextLengthRequired"));
+    const session = newSession(settings, "job", title.trim(), contextWindow);
+    const job = createJob(session.id, title, prompt, schedule);
+    await addSession(session);
+    await addJob(job);
+    sessionsRef.current[session.id] = session;
+    setSessions((items) => [...items, session]);
+    setJobs((items) => [...items, job]);
+  }
+
+  async function persistSkills(next: InstalledSkill[]): Promise<void> {
+    await saveSkills(next);
+    setSkills(next);
+  }
+
+  async function toggleJob(job: ScheduledJob): Promise<void> {
+    const paused = job.status !== "paused";
+    const updated: ScheduledJob = { ...job, status: paused ? "paused" : "scheduled",
+      nextRunAt: paused ? job.nextRunAt : nextRunAt(job.schedule, Date.now()) };
+    if (!paused && updated.nextRunAt === null) throw new Error(tr("jobPastTime"));
+    await saveJob(updated);
+    await syncAlarm(updated);
+    setJobs((items) => items.map((item) => item.id === updated.id ? updated : item));
+  }
+
+  async function deleteJob(id: string): Promise<void> {
+    await removeJob(id);
+    setJobs((items) => items.filter((item) => item.id !== id));
   }
 
   async function exportLog(): Promise<number> {
@@ -576,7 +780,7 @@ export function App() {
     const content = draft.trim();
     const selections = [...selectedRegions];
     const contextWindow = settings.contextWindowOverride || models.find((model) => model.id === settings.model)?.contextLength || 0;
-    if (!content || sending || connection !== "connected" || !settings.model || !contextWindow) return;
+    if (!content || sending || sessionsRef.current[activeSessionId]?.kind === "job" || connection !== "connected" || !settings.model || !contextWindow) return;
     const controller = new AbortController();
     const executionLog = createExecutionLog(settings.model, !!pageTarget, settings.approvalPolicy);
     requestController.current = controller;
@@ -589,6 +793,7 @@ export function App() {
     setError("");
     setSending(true);
     let mcpConnection: Awaited<ReturnType<typeof connectMcpServers>> | null = null;
+    const skillsForTurn = [...skills];
     try {
       mcpConnection = await connectMcpServers(settings.mcpServers, controller.signal);
       controller.signal.throwIfAborted();
@@ -598,10 +803,20 @@ export function App() {
       }).join("; ")}`);
       const browserTab = await getActiveBrowserTab();
       const connectedPage = pageTarget && browserTab?.tabId === pageTarget.tabId && browserTab.url === pageTarget.url ? pageTarget : null;
+      const skillCreation = createSkillTool(async (skill) => {
+        const index = skillsForTurn.findIndex((item) => item.id === skill.id);
+        if (index >= 0) skillsForTurn[index] = skill;
+        else skillsForTurn.push(skill);
+        await saveSkills(skillsForTurn);
+        setSkills([...skillsForTurn]);
+      });
       const result = await runTurn({
-        settings, contextWindow, state: agent, prompt: promptWithSelections(content, selections), signal: controller.signal, locale, skills,
+        settings, contextWindow, state: agent, prompt: promptWithSelections(content, selections), signal: controller.signal, locale, skills: skillsForTurn, skillToolsWhenEmpty: true,
         onTrace: executionLog.record,
-        tools: [...mcpConnection.tools.map((tool) => ({ ...tool, execute: async (args: unknown, signal: AbortSignal) => {
+        tools: [{ ...skillCreation, execute: async (args: unknown, signal: AbortSignal) => {
+          if (!await approveChange(tr("createSkill"), JSON.stringify(args), signal)) return JSON.stringify({ approved: false });
+          return skillCreation.execute(args, signal);
+        } }, ...mcpConnection.tools.map((tool) => ({ ...tool, execute: async (args: unknown, signal: AbortSignal) => {
           if (!await approveChange(tr("mcpActionApproval"), `${tool.definition.function.name}\n${JSON.stringify(args)}`, signal)) return JSON.stringify({ approved: false });
           signal.throwIfAborted();
           return tool.execute(args, signal);
@@ -649,7 +864,7 @@ export function App() {
   }
 
   const contextWindow = settings.contextWindowOverride || models.find((model) => model.id === settings.model)?.contextLength || 0;
-  const canSend = connection === "connected" && !!settings.model && contextWindow > 0 && !sending && !selectionLoading;
+  const canSend = connection === "connected" && !!settings.model && contextWindow > 0 && !sending && !selectionLoading && sessionsRef.current[activeSessionId]?.kind !== "job";
   const pageAccessAvailable = canReadPages();
 
   return (
@@ -658,23 +873,29 @@ export function App() {
         <div className="brand"><span className="brand__mark" aria-hidden="true">Q</span><h1>Qumi</h1></div>
         <div className="header-actions">
           <Status connection={connection} locale={locale} />
+          <button className="mp-button mp-button--ghost header-link" type="button" onClick={() => setView("sessions")} disabled={sending}>{tr("sessions")}</button>
+          <button className="mp-button mp-button--ghost header-link" type="button" onClick={() => setView("jobs")} disabled={sending}>{tr("scheduledJobs")}</button>
           <button className="mp-button mp-button--ghost icon-button" type="button" aria-label={tr("settingsAria")} onClick={() => setView("settings")} disabled={sending}><Icon name="settings" /></button>
         </div>
       </header>
 
       {view === "settings" ? (
-        <SettingsView settings={settings} availableModels={models} skills={skills} onSkillsChange={setSkills} onClose={() => setView("chat")} onSave={saveSettings} onExportLog={exportLog} onClearLog={clearExecutionLog} onMcpServersChange={persistMcpServers} onLanguageChange={(language) => { setSettings((current) => ({ ...current, language })); setError(""); setPageError(""); }} />
+        <SettingsView settings={settings} availableModels={models} skills={skills} onSkillsChange={persistSkills} onClose={() => setView("chat")} onSave={saveSettings} onExportLog={exportLog} onClearLog={clearExecutionLog} onMcpServersChange={persistMcpServers} onLanguageChange={(language) => { setSettings((current) => ({ ...current, language })); setError(""); setPageError(""); }} />
+      ) : view === "sessions" ? (
+        <SessionsView sessions={sessions} activeId={activeSessionId} locale={locale} onClose={() => setView("chat")} onOpen={(id) => void openSession(id)} />
+      ) : view === "jobs" ? (
+        <JobsView jobs={jobs} locale={locale} onClose={() => setView("chat")} onCreate={scheduleJob} onToggle={toggleJob} onDelete={deleteJob} onOpen={(id) => void openSession(id)} />
       ) : (
         <>
           <div className="model-bar">
             <div className="mp-field">
               <label className="mp-field__label" htmlFor="active-model">{tr("model")}</label>
-              <select id="active-model" className="mp-select" value={settings.model} onChange={(event) => changeModel(event.target.value)} disabled={models.length === 0 || sending}>
+              <select id="active-model" className="mp-select" value={settings.model} onChange={(event) => changeModel(event.target.value)} disabled={models.length === 0 || sending || sessionsRef.current[activeSessionId]?.kind === "job"}>
                 {models.length === 0 && <option value="">{tr("noModels")}</option>}
                 {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
               </select>
             </div>
-            <button className="mp-button mp-button--ghost icon-button new-chat" type="button" aria-label={tr("newChat")} title={tr("newChat")} onClick={() => { setMessages([]); setAgent(emptyAgentState()); setSelectedRegions([]); setError(""); }} disabled={sending || messages.length === 0}><Icon name="plus" /></button>
+            <button className="mp-button mp-button--ghost icon-button new-chat" type="button" aria-label={tr("newChat")} title={tr("newChat")} onClick={() => void startNewSession()} disabled={sending}><Icon name="plus" /></button>
           </div>
 
           <div className="page-bar">
@@ -690,8 +911,8 @@ export function App() {
           <main className="chat-history" aria-label={tr("conversation")}>
             {messages.length === 0 && (
               <div className="empty-chat">
-                <h2>{tr(connection === "connected" ? "howCanIHelp" : "gatewayRequired")}</h2>
-                <p>{tr(connection === "connected" ? "startConversation" : "checkGateway")}</p>
+                <h2>{tr(sessionsRef.current[activeSessionId]?.kind === "job" ? "jobScheduled" : connection === "connected" ? "howCanIHelp" : "gatewayRequired")}</h2>
+                <p>{tr(sessionsRef.current[activeSessionId]?.kind === "job" ? "jobSessionHint" : connection === "connected" ? "startConversation" : "checkGateway")}</p>
                 {connection !== "connected" && <button className="mp-button mp-button--secondary" type="button" onClick={() => setView("settings")}>{tr("gatewaySettings")}</button>}
               </div>
             )}
@@ -699,7 +920,7 @@ export function App() {
               {messages.map((message, index) => (
                 <article className={`message message--${message.role}`} key={index}>
                   <div className="message__label">{message.role === "user" ? tr("user") : "Qumi"}</div>
-                  <p className="message__content">{message.content}</p>
+                  {message.role === "assistant" ? <MarkdownMessage content={message.content} /> : <p className="message__content">{message.content}</p>}
                   {message.selections && <SelectionNotes selections={message.selections} locale={locale} />}
                   {typeof message.cachedTokens === "number" && message.cachedTokens > 0 && <p className="message__meta">{tr("cachedTokens", { count: formatNumber(locale, message.cachedTokens) })}</p>}
                 </article>
@@ -707,12 +928,13 @@ export function App() {
               {pendingPrompt && <article className="message message--user"><div className="message__label">{tr("user")}</div><p className="message__content">{pendingPrompt}</p><SelectionNotes selections={selectedRegions} locale={locale} /></article>}
               {sending && <div className="pending-message" role="status"><span className="mp-spinner" aria-hidden="true" />{progress}</div>}
               {sending && thinking && !streamed && <div className="thinking-preview" aria-label={tr("thinking")}><div className="thinking-preview__label">{tr("thinking")}</div><p className="thinking-preview__content" ref={thinkingContent}>{thinking}</p></div>}
-              {streamed && <article className="message message--assistant"><div className="message__label">Qumi</div><p className="message__content">{streamed}</p></article>}
+              {streamed && <article className="message message--assistant"><div className="message__label">Qumi</div><MarkdownMessage content={streamed} /></article>}
               <div ref={messagesEnd} />
             </div>
           </main>
 
           <form className="composer" onSubmit={(event) => void send(event)}>
+            {sessionsRef.current[activeSessionId]?.kind === "job" && <div className="mp-field__hint">{tr("jobSessionHint")}</div>}
             {pendingAction && <div className="navigation-request" role="dialog" aria-label={tr("browserActionConfirmation")}>
               <strong>{pendingAction.title}</strong>
               <span>{pendingAction.detail}</span>

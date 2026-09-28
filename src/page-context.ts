@@ -90,7 +90,7 @@ export async function requestPageAccess(candidate: PageCandidate): Promise<PageT
 
 export async function capturePageTarget(expected?: PageCandidate): Promise<PageTarget> {
   if (!canReadPages()) throw new Error("페이지 연결은 설치된 Chrome 확장에서 사용할 수 있습니다.");
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const [tab] = await chrome.tabs.query(expected ? { active: true, windowId: expected.windowId } : { active: true, currentWindow: true });
   if (!tab || tab.id === undefined || tab.windowId === undefined || !isWebUrl(tab.url)) throw new Error(noAccess);
   if (tab.status === "loading") throw new Error(pageChanged);
   if (expected && (tab.id !== expected.tabId || tab.windowId !== expected.windowId || tab.url !== expected.url)) throw new Error(pageChanged);

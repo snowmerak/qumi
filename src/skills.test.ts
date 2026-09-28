@@ -1,10 +1,19 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { installSkillFiles, parseSkill, searchSkills, skillTools } from "./skills.ts";
+import { createSkill, createSkillTool, installSkillFiles, parseSkill, searchSkills, skillTools } from "./skills.ts";
 
 const translation = `---\nname: article-translation\ndescription: Translate articles while preserving structure.\ntags: [translation, prose]\n---\n\n# Translation\nPreserve headings and links.\n`;
 
 describe("installed Agent Skills", () => {
+  it("creates a valid skill and registers it through an agent tool", async () => {
+    const saved = [] as ReturnType<typeof createSkill>[];
+    const tool = createSkillTool(async (skill) => { saved.push(skill); });
+    const result = JSON.parse(await tool.execute({ name: "writing-style", description: "Use for editing prose.", instructions: "# Style\nUse short sentences." }, new AbortController().signal));
+    assert.equal(result.installed, true);
+    assert.equal(saved[0].name, "writing-style");
+    assert.match(saved[0].files["SKILL.md"], /Use short sentences/);
+    assert.throws(() => createSkill("Bad Name", "description", "Body"), /유효한/);
+  });
   it("searches metadata and reads full text only through get_skill", async () => {
     const skill = parseSkill({ "SKILL.md": translation, "references/style.md": "Use natural Korean." });
     const hits = searchSkills([skill], "translate article");
